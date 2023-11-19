@@ -1,0 +1,5 @@
+[2023-11-19 17:57:10][INFO] This is an information log
+[2023-11-19 17:57:10][WARNING] This is a warning log
+[2023-11-19 17:57:10][ERROR] This is an error log
+[2023-11-19 17:57:10][SUCCESS] This is a success log
+2023-11-19 17:57:10[EXIT]This is an exit log

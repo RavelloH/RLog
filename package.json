@@ -1,0 +1,29 @@
+{
+  "name": "rlog-js",
+  "version": "0.1.0",
+  "description": "nodejs的log输出优化模块，支持有色输出、时间嵌入、日志流式写入等",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/RavelloH/RLog.git"
+  },
+  "keywords": [
+    "log",
+    "output",
+    "logtail"
+  ],
+  "author": "RavelloH",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/RavelloH/RLog/issues"
+  },
+  "homepage": "https://github.com/RavelloH/RLog#readme",
+  "dependencies": {
+    "chalk": "^4.1.2",
+    "moment": "^2.29.4",
+    "moment-timezone": "^0.5.43"
+  }
+}
