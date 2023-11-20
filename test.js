@@ -1,9 +1,13 @@
-const rlog = require('./index.js')
+const Rlog = require('./index.js')
+const rlog = new Rlog({
+  logFilePath: './log.txt',
+  timezone: 'Asia/Shanghai',
+  matchingRules: ['world', '[0-9]{9}'],
+});
 
-rlog.config.logFilePath = './log.txt'
-rlog.config.timezone = 'Asia/Shanghai'
-rlog.config.matchingRules = ['world', '[0-9]{9}']
-rlog.init()
+// rlog.config.logFilePath = './log.txt'
+// rlog.config.timezone = 'Asia/Shanghai'
+// rlog.config.matchingRules = ['world', '[0-9]{9}']
 
 
 rlog.info('ok1')
@@ -21,7 +25,7 @@ rlog.info('Welcome to https://github.com')
 rlog.info('my ip is 123.45.67.89')
 rlog.info('1970-12-12')
 rlog.info('false true')
-rlog.info('my email is example@site.com')
+rlog.info('my email\nasd\nasd\nasdsdsad\nasd\nis example@site.com')
 rlog.error('ok4')
 
 /* console.time()

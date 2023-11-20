@@ -1,152 +1,274 @@
 const chalk = require("chalk");
-const { Writable } = require("stream");
 const fs = require("fs");
 const moment = require("moment");
 require("moment-timezone");
 
-async function checkLogFile(path) {
-  try {
-    await fs.promises.access(path, fs.constants.F_OK);
-  } catch (err) {
+function Config() {
+  if (!this.enableColorfulOutput) {
+    chalk.level = 0;
+  }
+}
+Config.prototype = {
+  enableColorfulOutput: true,
+  logFilePath: undefined,
+  timeFormat: "YYYY-MM-DD HH:mm:ss.SSS",
+  timezone: "GMT",
+  blockedWordsList: [],
+  customColorRules: [
+    {
+      reg: "false",
+      color: "red",
+    },
+    {
+      reg: "true",
+      color: "green",
+    },
+    {
+      reg: "((2(5[0-5]|[0-4]\\d))|[0-1]?\\d{1,2})(\\.((2(5[0-5]|[0-4]\\d))|[0-1]?\\d{1,2})){3}",
+      color: "cyan",
+    },
+    {
+      reg: "[a-zA-z]+://[^\\s]*", // 网址
+      color: "cyan",
+    },
+    {
+      reg: "\\d{4}-\\d{1,2}-\\d{1,2}", // IP
+      color: "green",
+    },
+    {
+      reg: "\\w+([-+.]\\w+)*@\\w+([-.]\\w+)*\\.\\w+([-.]\\w+)*", // 邮箱
+      color: "cyan",
+    },
+    {
+      reg: "[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}", // uuid
+      color: "cyan",
+    },
+    {
+      reg: "(w+)s*:s*([^;]+)", // 键值对
+      color: "cyan",
+    },
+  ],
+  setConfig(obj) {
+    for (let key in obj) {
+      if (obj.hasOwnProperty(key)) {
+        this[key] = obj[key];
+      }
+    }
+  },
+  setConfigGlobal(obj) {
+    for (let key in obj) {
+      if (obj.hasOwnProperty(key)) {
+        this[key] = Config.prototype[key] = obj[key];
+      }
+    }
+  },
+};
+
+class Toolkit {
+  constructor(config) {
+    this.config = config;
+  }
+  /**@type {Config} */
+  config = null;
+  /**@type {Screen} */
+  screen = null;
+  async checkLogFile(path, rlog) {
     try {
-      await fs.promises.writeFile(path, "");
-      rlog.screen.warning(
-        `The specified log file ${path} does not exist, but successfully created.`,
-      );
+      await fs.promises.access(path, fs.constants.F_OK);
     } catch (err) {
-      rlog.screen.error("Could not create file, error: " + err);
+      try {
+        await fs.promises.writeFile(path, "");
+        this.screen.warning(
+          `The specified log file ${path} does not exist, but successfully created.`
+        );
+      } catch (err) {
+        this.screen.error("Could not create file, error: " + err);
+      }
     }
   }
-}
 
-function colorizeString(str) {
-  rlog.config.customColorRules.forEach((setting) => {
-    const { reg, color } = setting;
-    const regex = new RegExp(reg, "g");
-    str = str.replace(regex, (match) => chalk[color](match));
-  });
+  colorizeString(str) {
+    this.config.customColorRules.forEach((setting) => {
+      const { reg, color } = setting;
+      const regex = new RegExp(reg, "g");
+      str = str.replace(regex, (match) => chalk[color](match));
+    });
 
-  return str;
-}
-
-function formatTime() {
-  const now = moment();
-  const str = rlog.config.timeFormat;
-  const timezone = rlog.config.timezone;
-
-  if (str === "timestamp") {
-    return now.valueOf();
-  } else if (str === "ISO") {
-    return now.tz(timezone).toISOString();
-  } else if (str === "GMT") {
-    return now.tz("GMT").format("YYYY-MM-DDTHH:mm:ss.SSS") + "Z";
-  } else if (str === "UTC") {
-    return now.utc().format();
-  } else {
-    return now.tz(timezone).format(str);
-  }
-}
-
-function encryptPrivacyContent(str) {
-  if (typeof str !== "string" || rlog.config.blockedWordsList.length === 0) {
     return str;
   }
-  rlog.config.blockedWordsList.forEach((regex) => {
-    const pattern = new RegExp(regex, "g");
-    const replacement = "*".repeat(regex.length);
-    str = str.replace(pattern, replacement);
-  });
 
-  return str;
-}
+  formatTime() {
+    const now = moment();
+    const str = this.config.timeFormat;
+    const timezone = this.config.timezone;
 
-function colorizeType(variable) {
-  let type = typeof variable;
-  let coloredStr;
-
-  switch (type) {
-    case "string":
-      coloredStr = variable;
-      break;
-    case "number":
-      coloredStr = chalk.blue(variable);
-      break;
-    case "boolean":
-      coloredStr = chalk.green(variable);
-      break;
-    case "object":
-      coloredStr = chalk.magenta(JSON.stringify(variable));
-      break;
-    case "function":
-      coloredStr = chalk.cyan(variable.toString());
-      break;
-    default:
-      coloredStr = variable;
+    if (str === "timestamp") {
+      return now.valueOf();
+    } else if (str === "ISO") {
+      return now.tz(timezone).toISOString();
+    } else if (str === "GMT") {
+      return now.tz("GMT").format("YYYY-MM-DDTHH:mm:ss.SSS") + "Z";
+    } else if (str === "UTC") {
+      return now.utc().format();
+    } else {
+      return now.tz(timezone).format(str);
+    }
   }
 
-  return coloredStr;
-}
+  encryptPrivacyContent(str) {
+    if (typeof str !== "string" || this.config.blockedWordsList.length === 0) {
+      return str;
+    }
+    this.config.blockedWordsList.forEach((regex) => {
+      const pattern = new RegExp(regex, "g");
+      const replacement = "*".repeat(regex.length);
+      str = str.replace(pattern, replacement);
+    });
 
-function padLines(str, width) {
-  let lines = str.split("\n");
-  let paddedLines = [];
-
-  paddedLines.push(lines[0]);
-
-  for (let i = 1; i < lines.length; i++) {
-    let padding = " ".repeat(width);
-    paddedLines.push(padding + lines[i]);
+    return str;
   }
 
-  return paddedLines.join("\n");
+  colorizeType(variable) {
+    let type = typeof variable;
+    let coloredStr;
+
+    switch (type) {
+      case "string":
+        coloredStr = variable;
+        break;
+      case "number":
+        coloredStr = chalk.blue(variable);
+        break;
+      case "boolean":
+        coloredStr = chalk.green(variable);
+        break;
+      case "object":
+        coloredStr = chalk.magenta(JSON.stringify(variable));
+        break;
+      case "function":
+        coloredStr = chalk.cyan(variable.toString());
+        break;
+      default:
+        coloredStr = variable;
+    }
+
+    return coloredStr;
+  }
+
+  padLines(str, width) {
+    let lines = str.split("\n");
+    let paddedLines = [];
+
+    paddedLines.push(lines[0]);
+
+    for (let i = 1; i < lines.length; i++) {
+      let padding = " ".repeat(width);
+      paddedLines.push(padding + lines[i]);
+    }
+
+    return paddedLines.join("\n");
+  }
 }
 
-const rlog = {
-  init: async function () {
+class Screen {
+  constructor(toolkit) {
+    this.toolkit = toolkit;
+  }
+  /**@type {Toolkit} */
+  toolkit = null;
+  info(message, time) {
+    const timeheader = `[${time || this.toolkit.formatTime()}]`;
+    console.log(
+      `${timeheader}[${chalk.cyan("INFO")}] ${this.toolkit.colorizeString(
+        this.toolkit.encryptPrivacyContent(
+          this.toolkit.padLines(
+            this.toolkit.colorizeType(message),
+            timeheader.length + 7
+          )
+        )
+      )}`
+    );
+  }
+  warning(message, time) {
+    const timeheader = `[${time || this.toolkit.formatTime()}]`;
+    console.log(
+      `${timeheader}[${chalk.yellow("WARNING")}] ${this.toolkit.colorizeString(
+        this.toolkit.encryptPrivacyContent(
+          this.toolkit.padLines(
+            this.toolkit.colorizeType(message),
+            timeheader.length + 10
+          )
+        )
+      )}`
+    );
+  }
+  error(message, time) {
+    const timeheader = `[${time || this.toolkit.formatTime()}]`;
+    console.log(
+      `${timeheader}[${chalk.red("ERROR")}] ${this.toolkit.colorizeString(
+        this.toolkit.encryptPrivacyContent(
+          this.toolkit.padLines(
+            this.toolkit.colorizeType(message),
+            timeheader.length + 8
+          )
+        )
+      )}`
+    );
+  }
+  success(message, time) {
+    const timeheader = `[${time || this.toolkit.formatTime()}]`;
+    console.log(
+      `${timeheader}[${chalk.green("SUCCESS")}] ${this.toolkit.colorizeString(
+        this.toolkit.encryptPrivacyContent(
+          this.toolkit.padLines(chalk.green(message), timeheader.length + 10)
+        )
+      )}`
+    );
+  }
+  exit(message, time) {
+    const timeheader = `[${time || this.toolkit.formatTime()}]`;
+    console.log(
+      `${timeheader}[${chalk.bold.red("EXIT")}] ${this.toolkit.colorizeString(
+        this.toolkit.encryptPrivacyContent(
+          this.toolkit.padLines(chalk.bold.red(message), timeheader.length + 7)
+        )
+      )}`
+    );
+  }
+}
+
+class File {
+  constructor(toolkit, config, screen) {
+    this.config = config;
+    this.toolkit = toolkit;
+    this.screen = screen;
+    this.init();
+  }
+  /**@type {Config} */
+  config = null;
+  /**@type {Toolkit} */
+  toolkit = null;
+  /**@type {Screen} */
+  screen = null;
+  /**@type {fs.WriteStream} */
+  logStream = null;
+
+  init() {
     if (this.config.logFilePath) {
-      checkLogFile(this.config.logFilePath);
+      this.toolkit.checkLogFile(this.config.logFilePath);
       try {
         this.logStream = fs.createWriteStream(this.config.logFilePath, {
           flags: "a",
         });
         this.screen.info(
-          "The log will be written to " + this.config.logFilePath,
+          "The log will be written to " + this.config.logFilePath
         );
       } catch (err) {
         this.screen.exit("Error creating log stream: ", err);
       }
     }
-    if (!this.config.enableColorfulOutput) {
-      chalk.level = 0;
-    }
-  },
-  info: function (message) {
-    const time = formatTime();
-    this.screen.info(message, time);
-    this.file.info(message, time);
-  },
-  warning: function (message) {
-    const time = formatTime();
-    this.screen.warning(message, time);
-    this.file.warning(message, time);
-  },
-  error: function (message) {
-    const time = formatTime();
-    this.screen.error(message, time);
-    this.file.error(message, time);
-  },
-  success: function (message) {
-    const time = formatTime();
-    this.screen.success(message, time);
-    this.file.success(message, time);
-  },
-  exit: async function (message) {
-    const time = formatTime();
-    this.screen.exit(message, time);
-    await this.writeLogToStream(`${time}[EXIT]${message}\n`);
-    process.exit();
-  },
-  writeLogToStream: function (text) {
+  }
+  writeLogToStream(text) {
     return new Promise((resolve, reject) => {
       if (this.logStream) {
         this.logStream.write(text, (err) => {
@@ -160,168 +282,118 @@ const rlog = {
         reject(new Error("Log stream not initialized"));
       }
     });
-  },
-  screen: {
-    info: (message, time) => {
-      const timeheader = `[${time || formatTime()}]`;
-      console.log(
-        `${timeheader}[${chalk.cyan("INFO")}] ${colorizeString(
-          encryptPrivacyContent(
-            padLines(colorizeType(message), timeheader.length + 7),
-          ),
-        )}`,
-      );
-    },
-    warning: (message, time) => {
-      const timeheader = `[${time || formatTime()}]`;
-      console.log(
-        `${timeheader}[${chalk.yellow("WARNING")}] ${colorizeString(
-          encryptPrivacyContent(
-            padLines(colorizeType(message), timeheader.length + 10),
-          ),
-        )}`,
-      );
-    },
-    error: (message, time) => {
-      const timeheader = `[${time || formatTime()}]`;
-      console.log(
-        `${timeheader}[${chalk.red("ERROR")}] ${colorizeString(
-          encryptPrivacyContent(
-            padLines(colorizeType(message), timeheader.length + 8),
-          ),
-        )}`,
-      );
-    },
-    success: (message, time) => {
-      const timeheader = `[${time || formatTime()}]`;
-      console.log(
-        `${timeheader}[${chalk.green("SUCCESS")}] ${colorizeString(
-          encryptPrivacyContent(
-            padLines(chalk.green(message), timeheader.length + 10),
-          ),
-        )}`,
-      );
-    },
-    exit: (message, time) => {
-      const timeheader = `[${time || formatTime()}]`;
-      console.log(
-        `${timeheader}[${chalk.bold.red("EXIT")}] ${colorizeString(
-          encryptPrivacyContent(
-            padLines(chalk.bold.red(message), timeheader.length + 7),
-          ),
-        )}`,
-      );
-    },
-  },
-  file: {
-    info: (message, time) => {
-      rlog.writeLog(
-        `[${time || formatTime()}][INFO] ${encryptPrivacyContent(
-          message,
-          rlog.config.blockedWordsList,
-        )}`,
-      );
-    },
-    warning: (message, time) => {
-      rlog.writeLog(
-        `[${time || formatTime()}][WARNING] ${encryptPrivacyContent(
-          message,
-          rlog.config.blockedWordsList,
-        )}`,
-      );
-    },
-    error: (message, time) => {
-      rlog.writeLog(
-        `[${time || formatTime()}][ERROR] ${encryptPrivacyContent(
-          message,
-          rlog.config.blockedWordsList,
-        )}`,
-      );
-    },
-    success: (message, time) => {
-      rlog.writeLog(
-        `[${time || formatTime()}][SUCCESS] ${encryptPrivacyContent(
-          message,
-          rlog.config.blockedWordsList,
-        )}`,
-      );
-    },
-    exit: (message, time) => {
-      rlog.writeLog(
-        `[${time || formatTime()}][EXIT] ${encryptPrivacyContent(
-          message,
-          rlog.config.blockedWordsList,
-        )}`,
-      );
-    },
-  },
-  writeLog: function (text) {
+  }
+  writeLog(text) {
     if (this.config.logFilePath) {
       if (!this.logStream) {
         this.screen.warning(
-          "RLog not initialized, automatic execution in progress...",
+          "RLog not initialized, automatic execution in progress..."
         );
         this.init();
       }
       this.logStream.write(`${text}\n`);
     }
-  },
-  config: {
-    enableColorfulOutput: true,
-    logFilePath: undefined,
-    timeFormat: "YYYY-MM-DD HH:mm:ss.SSS",
-    timezone: "GMT",
-    blockedWordsList: [],
-    customColorRules: [
-      {
-        reg: "false",
-        color: "red",
-      },
-      {
-        reg: "true",
-        color: "green",
-      },
-      {
-        reg: "((2(5[0-5]|[0-4]\\d))|[0-1]?\\d{1,2})(\\.((2(5[0-5]|[0-4]\\d))|[0-1]?\\d{1,2})){3}",
-        color: "cyan",
-      },
-      {
-        reg: "[a-zA-z]+://[^\\s]*", // 网址
-        color: "cyan",
-      },
-      {
-        reg: "\\d{4}-\\d{1,2}-\\d{1,2}", // IP
-        color: "green",
-      },
-      {
-        reg: "\\w+([-+.]\\w+)*@\\w+([-.]\\w+)*\\.\\w+([-.]\\w+)*", // 邮箱
-        color: "cyan",
-      },
-      {
-        reg: "[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}", // uuid
-        color: "cyan",
-      },
-      {
-        reg: "(w+)s*:s*([^;]+)", // 键值对
-        color: "cyan",
-      }
-    ],
-    setConfig: function (obj) {
-      for (let key in obj) {
-        if (obj.hasOwnProperty(key)) {
-          rlog.config[key] = obj[key];
-        }
-      }
-    },
-  },
+  }
+
+  info(message, time) {
+    this.writeLog(
+      `[${
+        time || this.toolkit.formatTime()
+      }][INFO] ${this.toolkit.encryptPrivacyContent(
+        message,
+        this.config.blockedWordsList
+      )}`
+    );
+  }
+  warning(message, time) {
+    this.writeLog(
+      `[${
+        time || this.toolkit.formatTime()
+      }][WARNING] ${this.toolkit.encryptPrivacyContent(
+        message,
+        this.config.blockedWordsList
+      )}`
+    );
+  }
+  error(message, time) {
+    this.writeLog(
+      `[${
+        time || this.toolkit.formatTime()
+      }][ERROR] ${this.toolkit.encryptPrivacyContent(
+        message,
+        this.config.blockedWordsList
+      )}`
+    );
+  }
+  success(message, time) {
+    this.writeLog(
+      `[${
+        time || this.toolkit.formatTime()
+      }][SUCCESS] ${this.toolkit.encryptPrivacyContent(
+        message,
+        this.config.blockedWordsList
+      )}`
+    );
+  }
+  exit(message, time) {
+    this.writeLog(
+      `[${
+        time || this.toolkit.formatTime()
+      }][EXIT] ${this.toolkit.encryptPrivacyContent(
+        message,
+        this.config.blockedWordsList
+      )}`
+    );
+  }
+}
+
+class Rlog {
+  static Config = Config;
+  static Toolkit = Toolkit;
+  static Screen = Screen;
+  static File = File;
+  /**
+   * @param {Config} config
+   */
+  constructor(config) {
+    this.config.setConfig(config);
+    this.toolkit.screen = this.screen = new Screen(this.toolkit);
+    this.file = new File(this.toolkit, this.config, this.screen);
+  }
+  /**@type {Config} */
+  config = new Config();
+  /**@type {Screen} */
+  screen = null;
+  /**@type {Toolkit} */
+  toolkit = new Toolkit(this.config);
+  /**@type {File} */
+  file = null;
+  #genApi(key) {
+    return message => {
+      const time = this.toolkit.formatTime();
+      this.screen[key](message, time);
+      this.file[key](message, time);
+    }
+  }
+  info = this.#genApi('info');
+  warning = this.#genApi('warning');
+  error = this.#genApi('error');
+  success = this.#genApi('success');
+  async exit (message) {
+    const time = this.toolkit.formatTime();
+    this.screen.exit(message, time);
+    await this.file.writeLogToStream(`${time}[EXIT]${message}\n`);
+    process.exit();
+  }
 };
 
 process.on("beforeExit", async () => {
-  if (rlog.logStream) {
+  const rlog = new Rlog();
+  if (rlog.file.logStream) {
     await new Promise((resolve) => {
-      rlog.logStream.end(resolve);
+      rlog.file.logStream.end(resolve);
     });
   }
 });
 
-module.exports = rlog;
+module.exports = Rlog;

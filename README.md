@@ -13,14 +13,15 @@ npm install rlog-js
 ## 使用
 
 ```javascript
-const rlog = require("rlog-js");
+const Rlog = require("rlog-js");
+const rlog = new Rlog();
 ```
 
 ## API
 
-### rlog.init()
+### rlog.file.init()
 
-初始化rlog。如果配置了日志文件路径（`config.logFilePath`），将会创建日志文件并初始化日志流。
+初始化rlog。不需要手动执行。如果配置了日志文件路径（`config.logFilePath`），将会创建日志文件并初始化日志流。
 
 ### rlog.info(message)
 
@@ -66,17 +67,17 @@ rlog的配置对象，可以通过修改配置对象中的属性来自定义rlog
 ## 示例
 
 ```javascript
-const rlog = require("rlog-js");
-
-rlog.config.setConfig({
+const Rlog = require("rlog-js");
+const rlog = new Rlog({
   enableColorfulOutput: true,
   logFilePath: "logs.txt",
+});
+
+rlog.config.setConfig({
   timeFormat: "YYYY-MM-DD HH:mm:ss",
   timezone: "Asia/Shanghai",
   blockedWordsList: ["password", "secret"],
 });
-
-rlog.init();
 
 rlog.info("This is an information log");
 rlog.warning("This is a warning log");
