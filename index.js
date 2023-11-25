@@ -79,7 +79,7 @@ class Toolkit {
       try {
         await fs.promises.writeFile(path, "");
         this.screen.warning(
-          `The specified log file ${path} does not exist, but successfully created.`
+          `The specified log file ${path} does not exist, but successfully created.`,
         );
       } catch (err) {
         this.screen.error("Could not create file, error: " + err);
@@ -183,10 +183,10 @@ class Screen {
         this.toolkit.encryptPrivacyContent(
           this.toolkit.padLines(
             this.toolkit.colorizeType(message),
-            timeheader.length + 7
-          )
-        )
-      )}`
+            timeheader.length + 7,
+          ),
+        ),
+      )}`,
     );
   }
   warning(message, time) {
@@ -196,10 +196,10 @@ class Screen {
         this.toolkit.encryptPrivacyContent(
           this.toolkit.padLines(
             this.toolkit.colorizeType(message),
-            timeheader.length + 7
-          )
-        )
-      )}`
+            timeheader.length + 7,
+          ),
+        ),
+      )}`,
     );
   }
   error(message, time) {
@@ -209,10 +209,10 @@ class Screen {
         this.toolkit.encryptPrivacyContent(
           this.toolkit.padLines(
             this.toolkit.colorizeType(message),
-            timeheader.length + 7
-          )
-        )
-      )}`
+            timeheader.length + 7,
+          ),
+        ),
+      )}`,
     );
   }
   success(message, time) {
@@ -220,9 +220,9 @@ class Screen {
     console.log(
       `${timeheader}[${chalk.green("SUCC")}] ${this.toolkit.colorizeString(
         this.toolkit.encryptPrivacyContent(
-          this.toolkit.padLines(chalk.green(message), timeheader.length + 7)
-        )
-      )}`
+          this.toolkit.padLines(chalk.green(message), timeheader.length + 7),
+        ),
+      )}`,
     );
   }
   exit(message, time) {
@@ -230,9 +230,9 @@ class Screen {
     console.log(
       `${timeheader}[${chalk.bold.red("EXIT")}] ${this.toolkit.colorizeString(
         this.toolkit.encryptPrivacyContent(
-          this.toolkit.padLines(chalk.bold.red(message), timeheader.length + 7)
-        )
-      )}`
+          this.toolkit.padLines(chalk.bold.red(message), timeheader.length + 7),
+        ),
+      )}`,
     );
   }
 }
@@ -261,7 +261,7 @@ class File {
           flags: "a",
         });
         this.screen.info(
-          "The log will be written to " + this.config.logFilePath
+          "The log will be written to " + this.config.logFilePath,
         );
       } catch (err) {
         this.screen.exit("Error creating log stream: ", err);
@@ -287,7 +287,7 @@ class File {
     if (this.config.logFilePath) {
       if (!this.logStream) {
         this.screen.warning(
-          "RLog not initialized, automatic execution in progress..."
+          "RLog not initialized, automatic execution in progress...",
         );
         this.init();
       }
@@ -301,8 +301,8 @@ class File {
         time || this.toolkit.formatTime()
       }][INFO] ${this.toolkit.encryptPrivacyContent(
         message,
-        this.config.blockedWordsList
-      )}`
+        this.config.blockedWordsList,
+      )}`,
     );
   }
   warning(message, time) {
@@ -311,8 +311,8 @@ class File {
         time || this.toolkit.formatTime()
       }][WARNING] ${this.toolkit.encryptPrivacyContent(
         message,
-        this.config.blockedWordsList
-      )}`
+        this.config.blockedWordsList,
+      )}`,
     );
   }
   error(message, time) {
@@ -321,8 +321,8 @@ class File {
         time || this.toolkit.formatTime()
       }][ERROR] ${this.toolkit.encryptPrivacyContent(
         message,
-        this.config.blockedWordsList
-      )}`
+        this.config.blockedWordsList,
+      )}`,
     );
   }
   success(message, time) {
@@ -331,8 +331,8 @@ class File {
         time || this.toolkit.formatTime()
       }][SUCCESS] ${this.toolkit.encryptPrivacyContent(
         message,
-        this.config.blockedWordsList
-      )}`
+        this.config.blockedWordsList,
+      )}`,
     );
   }
   exit(message, time) {
@@ -341,8 +341,8 @@ class File {
         time || this.toolkit.formatTime()
       }][EXIT] ${this.toolkit.encryptPrivacyContent(
         message,
-        this.config.blockedWordsList
-      )}`
+        this.config.blockedWordsList,
+      )}`,
     );
   }
 }
@@ -369,23 +369,42 @@ class Rlog {
   /**@type {File} */
   file = null;
   #genApi(key) {
-    return message => {
+    return (message) => {
       const time = this.toolkit.formatTime();
       this.screen[key](message, time);
       this.file[key](message, time);
-    }
+    };
   }
-  info = this.#genApi('info');
-  warning = this.#genApi('warning');
-  error = this.#genApi('error');
-  success = this.#genApi('success');
-  async exit (message) {
+  info = this.#genApi("info");
+  warning = this.#genApi("warning");
+  error = this.#genApi("error");
+  success = this.#genApi("success");
+  async exit(message) {
     const time = this.toolkit.formatTime();
     this.screen.exit(message, time);
     await this.file.writeLogToStream(`${time}[EXIT]${message}\n`);
     process.exit();
   }
-};
+  log(message) {
+    const time = this.toolkit.formatTime();
+    const keywords = {
+      success: /(success|ok|done|✓)/i,
+      warning: /(warn|but|notice|see|problem)/i,
+      error: /(error|fail|mistake|problem)/i,
+    };
+
+    for (let key in keywords) {
+      if (keywords.hasOwnProperty(key)) {
+        const regex = keywords[key];
+        if (regex.test(message)) {
+          this[key](message, time);
+          return;
+        }
+      }
+    }
+    this.info(message, time);
+  }
+}
 
 process.on("beforeExit", async () => {
   const rlog = new Rlog();
