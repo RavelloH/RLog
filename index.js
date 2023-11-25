@@ -192,11 +192,11 @@ class Screen {
   warning(message, time) {
     const timeheader = `[${time || this.toolkit.formatTime()}]`;
     console.log(
-      `${timeheader}[${chalk.yellow("WARNING")}] ${this.toolkit.colorizeString(
+      `${timeheader}[${chalk.yellow("WARN")}] ${this.toolkit.colorizeString(
         this.toolkit.encryptPrivacyContent(
           this.toolkit.padLines(
             this.toolkit.colorizeType(message),
-            timeheader.length + 10
+            timeheader.length + 7
           )
         )
       )}`
@@ -205,11 +205,11 @@ class Screen {
   error(message, time) {
     const timeheader = `[${time || this.toolkit.formatTime()}]`;
     console.log(
-      `${timeheader}[${chalk.red("ERROR")}] ${this.toolkit.colorizeString(
+      `${timeheader}[${chalk.red("ERR!")}] ${this.toolkit.colorizeString(
         this.toolkit.encryptPrivacyContent(
           this.toolkit.padLines(
             this.toolkit.colorizeType(message),
-            timeheader.length + 8
+            timeheader.length + 7
           )
         )
       )}`
@@ -218,9 +218,9 @@ class Screen {
   success(message, time) {
     const timeheader = `[${time || this.toolkit.formatTime()}]`;
     console.log(
-      `${timeheader}[${chalk.green("SUCCESS")}] ${this.toolkit.colorizeString(
+      `${timeheader}[${chalk.green("SUCC")}] ${this.toolkit.colorizeString(
         this.toolkit.encryptPrivacyContent(
-          this.toolkit.padLines(chalk.green(message), timeheader.length + 10)
+          this.toolkit.padLines(chalk.green(message), timeheader.length + 7)
         )
       )}`
     );
