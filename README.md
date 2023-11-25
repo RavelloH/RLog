@@ -2,7 +2,10 @@
 
 [![npm version](https://badge.fury.io/js/rlog-js.svg)](https://badge.fury.io/js/rlog-js)
 
-rlog-js是一个用于记录日志的npm包。它提供了一系列的接口，用于在控制台和文件中打印日志。同时，它还提供了一些工具函数，用于格式化日志信息、加密敏感内容等。
+rlog-js是一个用于记录日志、统一日志格式并优化输出的npm包，基于nodejs可写流异步写入log至文件，提供了一系列的接口，用于在控制台和文件中打印日志。同时，还提供了一些工具函数，用于格式化日志信息、加密敏感内容、为不同类型及不同关键词上色等等。
+
+![Screenshot_20231125_211617_com termux](https://github.com/RavelloH/RLog/assets/68409330/32530cfd-ae19-4331-a7a8-86c54998dbfc)
+
 
 ## 安装
 
