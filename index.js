@@ -72,7 +72,7 @@ class Toolkit {
   config = null;
   /**@type {Screen} */
   screen = null;
-  async checkLogFile(path, rlog) {
+  async checkLogFile(path) {
     try {
       await fs.promises.access(path, fs.constants.F_OK);
     } catch (err) {

@@ -102,7 +102,7 @@ rlog.toolkit.methodName();
 
 Toolkit是一个工具类，用于提供一些常用的工具函数。它具有以下方法：
 
-- `checkLogFile(path, rlog)`：检查日志文件是否存在，如果不存在则创建该文件。
+- `checkLogFile(path)`：检查日志文件是否存在，如果不存在则创建该文件。
 - `colorizeString(str)`：根据配置的颜色规则对字符串进行着色。
 - `formatTime()`：根据配置的时间格式和时区生成时间字符串。
 - `encryptPrivacyContent(str)`：对字符串中的敏感内容进行加密。
