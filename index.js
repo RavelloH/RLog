@@ -359,6 +359,7 @@ class Rlog {
     this.config.setConfig(config);
     this.toolkit.screen = this.screen = new Screen(this.toolkit);
     this.file = new File(this.toolkit, this.config, this.screen);
+    this.exitListeners = [];
   }
   /**@type {Config} */
   config = new Config();
@@ -383,6 +384,7 @@ class Rlog {
     const time = this.toolkit.formatTime();
     this.screen.exit(message, time);
     await this.file.writeLogToStream(`${time}[EXIT]${message}\n`);
+    this.exitListeners.forEach(listener => listener());
     process.exit();
   }
   log(message) {
@@ -403,6 +405,9 @@ class Rlog {
       }
     }
     this.info(message, time);
+  }
+  onExit(callback) {
+    this.exitListeners.push(callback);
   }
 }
 

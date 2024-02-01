@@ -69,6 +69,8 @@ declare class Rlog {
   success(message: any): void;
   exit(message: any): Promise<never>;
   log(message: any): void;
+  onExit(callback: () => void): void;
+  exitListeners: (() => void)[];
 }
 
 export = Rlog;

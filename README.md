@@ -140,6 +140,16 @@ File是用于将日志写入文件的类。调用此方法，若已设置日志�
 - `success(message, time)`：写入一条成功日志。
 - `exit(message, time)`：写入一条退出日志，并终止应用程序。
 
+
+## 回调
+rlog-js提供了一个回调`onExit`，用来在退出程序之前执行（如显示issue report提示等)  
+
+```
+rlog.onExit(() => {
+  console.log('rlog.exit() called and event triggered.');
+});
+```
+
 ## 配置
 
 rlog-js还提供了一些配置选项，可以在创建Rlog实例时进行配置，也可以使用`setConfig()`和`setConfigGlobal()`或者以`rlog.config[config] = <value>`的方式设置。

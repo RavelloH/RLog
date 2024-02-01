@@ -10,6 +10,11 @@ rlog.config.setConfigGlobal({
 // rlog.config.logFilePath = './log.txt'
 // rlog.config.timezone = 'Asia/Shanghai'
 
+// Register an exit callback to display additional information
+rlog.onExit(() => {
+  rlog.warning('rlog.exit() called and event triggered.');
+});
+
 function test() {
   let a = null;
 }
