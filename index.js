@@ -383,7 +383,7 @@ class Rlog {
   async exit(message) {
     const time = this.toolkit.formatTime();
     this.screen.exit(message, time);
-    await this.file.writeLogToStream(`${time}[EXIT]${message}\n`);
+    await this.file.writeLogToStream(`[${time}][EXIT]${message}\n`);
     this.exitListeners.forEach(listener => listener());
     process.exit();
   }
