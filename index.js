@@ -1,5 +1,5 @@
 const chalk = require("chalk");
-const fs = require("fs");
+const fs = require("fs-extra");
 const moment = require("moment");
 require("moment-timezone");
 
@@ -74,13 +74,11 @@ class Toolkit {
   screen = null;
   async checkLogFile(path) {
     try {
+      await fs.ensureFileSync(path);
       await fs.promises.access(path, fs.constants.F_OK);
     } catch (err) {
       try {
         await fs.promises.writeFile(path, "");
-        this.screen.warning(
-          `The specified log file ${path} does not exist, but successfully created.`,
-        );
       } catch (err) {
         this.screen.error("Could not create file, error: " + err);
       }
@@ -384,7 +382,7 @@ class Rlog {
     const time = this.toolkit.formatTime();
     this.screen.exit(message, time);
     await this.file.writeLogToStream(`[${time}][EXIT]${message}\n`);
-    this.exitListeners.forEach(listener => listener());
+    this.exitListeners.forEach((listener) => listener());
     process.exit();
   }
   log(message) {

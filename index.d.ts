@@ -7,7 +7,7 @@ declare namespace Rlog {
     reg: string;
     color: string;
   }
-  
+
   class Config {
     enableColorfulOutput: boolean;
     logFilePath?: string;

@@ -6,7 +6,6 @@ rlog-js是一个用于记录日志、统一日志格式并优化输出的npm包�
 
 ![Screenshot_20231125_211617_com termux](https://github.com/RavelloH/RLog/assets/68409330/32530cfd-ae19-4331-a7a8-86c54998dbfc)
 
-
 ## 安装
 
 使用npm进行安装：
@@ -39,18 +38,18 @@ const rlog = new Rlog();
 const Rlog = require("rlog-js");
 
 const rlog = new Rlog({
-    enableColorfulOutput: true,
-    logFilePath: "logs.txt",
+  enableColorfulOutput: true,
+  logFilePath: "logs.txt",
 });
 
 rlog.config.setConfig({
-    timeFormat: "YYYY-MM-DD HH:mm:ss",
-    timezone: "Asia/Shanghai",
-    blockedWordsList: ["password", "secret"],
+  timeFormat: "YYYY-MM-DD HH:mm:ss",
+  timezone: "Asia/Shanghai",
+  blockedWordsList: ["password", "secret"],
 });
 
 rlog.info("This is an information log");
-rlog.log('This is an automatically recognized type of log output')
+rlog.log("This is an automatically recognized type of log output");
 rlog.warning("This is a warning log");
 rlog.error("This is an error log");
 rlog.success("This is a success log");
@@ -62,8 +61,9 @@ rlog.exit("This is a secure exit method");
 ### Rlog
 
 ```javascript
-rlog.methodName()
+rlog.methodName();
 ```
+
 Rlog是rlog-js的主类，用于创建日志实例，会自动调用File和Screen方法。它具有以下方法：
 
 - `info(message)`：打印一条信息日志，并将其写入日志文件。
@@ -73,11 +73,10 @@ Rlog是rlog-js的主类，用于创建日志实例，会自动调用File和Scree
 - `exit(message)`：打印一条退出日志，并将其写入日志文件，然后终止应用程序。
 - `log(message)`: 自动识别message类型并调用相关函数。
 
-
 ### Config
 
 ```javascript
-rlog.config
+rlog.config;
 ```
 
 Config是一个用于配置rlog-js的类。可设置的项，详见[#配置](#配置)。
@@ -112,7 +111,7 @@ Toolkit是一个工具类，用于提供一些常用的工具函数。它具有�
 ### Screen
 
 ```javascript
-rlog.screen.methodName()
+rlog.screen.methodName();
 ```
 
 Screen是用于在控制台打印日志的类。调用此方法，将仅在屏幕中输出，不会写入至文件。它具有以下方法：
@@ -126,7 +125,7 @@ Screen是用于在控制台打印日志的类。调用此方法，将仅在屏�
 ### File
 
 ```javascript
-rlog.file.methodName()
+rlog.file.methodName();
 ```
 
 File是用于将日志写入文件的类。调用此方法，若已设置日志文件路径，将会写入至文件，不会在屏幕输出。它具有以下方法：
@@ -140,9 +139,9 @@ File是用于将日志写入文件的类。调用此方法，若已设置日志�
 - `success(message, time)`：写入一条成功日志。
 - `exit(message, time)`：写入一条退出日志，并终止应用程序。
 
-
 ## 回调
-rlog-js提供了一个回调`onExit`，用来在退出程序之前执行（如显示issue report提示等)  
+
+rlog-js提供了一个回调`onExit`，用来在退出程序之前执行（如显示issue report提示等)
 
 ```
 rlog.onExit(() => {
@@ -209,25 +208,25 @@ rlog-js还提供了一些配置选项，可以在创建Rlog实例时进行配置
 
 ```javascript
 const config = {
-    enableColorfulOutput: true,
-    logFilePath: "/path/to/logfile.log",
-    timeFormat: "YYYY-MM-DD HH:mm:ss.SSS",
-    timezone: "GMT",
-    blockedWordsList: ["password",
-        "secret"],
-    customColorRules: [{
-        reg: "error",
-        color: "red",
+  enableColorfulOutput: true,
+  logFilePath: "/path/to/logfile.log",
+  timeFormat: "YYYY-MM-DD HH:mm:ss.SSS",
+  timezone: "GMT",
+  blockedWordsList: ["password", "secret"],
+  customColorRules: [
+    {
+      reg: "error",
+      color: "red",
     },
-        {
-            reg: "warning",
-            color: "yellow",
-        },
-        {
-            reg: "success",
-            color: "green",
-        },
-    ],
+    {
+      reg: "warning",
+      color: "yellow",
+    },
+    {
+      reg: "success",
+      color: "green",
+    },
+  ],
 };
 
 const rlog = new Rlog(config);
@@ -237,18 +236,17 @@ const rlog = new Rlog(config);
 
 ```javascript
 rlog.config.setConfig({
-    timeFormat: "YYYY-MM-DD HH:mm:ss",
-    timezone: "Asia/Shanghai",
-    blockedWordsList: ["password", "secret"],
+  timeFormat: "YYYY-MM-DD HH:mm:ss",
+  timezone: "Asia/Shanghai",
+  blockedWordsList: ["password", "secret"],
 });
 
 rlog.config.setConfigGlobal({
-    timeFormat: "YYYY-MM-DD HH:mm:ss",
-    timezone: "Asia/Shanghai",
-    blockedWordsList: ["password", "secret"],
+  timeFormat: "YYYY-MM-DD HH:mm:ss",
+  timezone: "Asia/Shanghai",
+  blockedWordsList: ["password", "secret"],
 });
 ```
-
 
 ## License
 
