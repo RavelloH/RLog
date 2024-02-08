@@ -390,7 +390,7 @@ class Rlog {
     const keywords = {
       success: /(success|ok|done|✓)/i,
       warning: /(warn|but|notice|see|problem)/i,
-      error: /(error|fail|mistake|problem)/i,
+      error: /(error|fail|mistake|problem|fatal)/i,
     };
 
     for (let key in keywords) {
