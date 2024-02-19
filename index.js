@@ -12,7 +12,7 @@ Config.prototype = {
   enableColorfulOutput: true,
   logFilePath: undefined,
   timeFormat: "YYYY-MM-DD HH:mm:ss.SSS",
-  timezone: "GMT",
+  timezone: undefined,
   blockedWordsList: [],
   customColorRules: [
     {
@@ -99,17 +99,20 @@ class Toolkit {
     const now = moment();
     const str = this.config.timeFormat;
     const timezone = this.config.timezone;
-
-    if (str === "timestamp") {
-      return now.valueOf();
-    } else if (str === "ISO") {
-      return now.tz(timezone).toISOString();
-    } else if (str === "GMT") {
-      return now.tz("GMT").format("YYYY-MM-DDTHH:mm:ss.SSS") + "Z";
-    } else if (str === "UTC") {
-      return now.utc().format();
+    if (timezone) {
+      if (str === "timestamp") {
+        return now.valueOf();
+      } else if (str === "ISO") {
+        return now.tz(timezone).toISOString();
+      } else if (str === "GMT") {
+        return now.tz("GMT").format("YYYY-MM-DDTHH:mm:ss.SSS") + "Z";
+      } else if (str === "UTC") {
+        return now.utc().format();
+      } else {
+        return now.tz(timezone).format(str);
+      }
     } else {
-      return now.tz(timezone).format(str);
+      return now.format(str);
     }
   }
 
@@ -368,7 +371,8 @@ class Rlog {
   /**@type {File} */
   file = null;
   #genApi(key) {
-    return (message) => {
+    return (...args) => {
+      const message = args.join(" ");
       const time = this.toolkit.formatTime();
       this.screen[key](message, time);
       this.file[key](message, time);
@@ -385,7 +389,8 @@ class Rlog {
     this.exitListeners.forEach((listener) => listener());
     process.exit();
   }
-  log(message) {
+  log(...args) {
+    const message = args.join(" ");
     const time = this.toolkit.formatTime();
     const keywords = {
       success: /(success|ok|done|✓)/i,
