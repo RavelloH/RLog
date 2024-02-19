@@ -100,19 +100,20 @@ class Toolkit {
     const str = this.config.timeFormat;
     const timezone = this.config.timezone;
     if (timezone) {
-      if (str === "timestamp") {
-        return now.valueOf();
-      } else if (str === "ISO") {
-        return now.tz(timezone).toISOString();
-      } else if (str === "GMT") {
-        return now.tz("GMT").format("YYYY-MM-DDTHH:mm:ss.SSS") + "Z";
-      } else if (str === "UTC") {
-        return now.utc().format();
-      } else {
-        return now.tz(timezone).format(str);
-      }
+    if (str === "timestamp") {
+      return now.valueOf();
+    } else if (str === "ISO") {
+      return now.tz(timezone).toISOString();
+    } else if (str === "GMT") {
+      return now.tz("GMT").format("YYYY-MM-DDTHH:mm:ss.SSS") + "Z";
+    } else if (str === "UTC") {
+      return now.utc().format();
     } else {
-      return now.format(str);
+      return now.tz(timezone).format(str);
+    }
+    }
+    else {
+        return now.format(str)
     }
   }
 
@@ -402,12 +403,12 @@ class Rlog {
       if (keywords.hasOwnProperty(key)) {
         const regex = keywords[key];
         if (regex.test(message)) {
-          this[key](message, time);
+          this[key](message);
           return;
         }
       }
     }
-    this.info(message, time);
+    this.info(message);
   }
   onExit(callback) {
     this.exitListeners.push(callback);
