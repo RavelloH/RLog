@@ -1,3 +1,5 @@
+type Tostringable = string | null | boolean | undefined | number | bigint;
+
 /**
  * rlog-js
  * @license MIT
@@ -23,9 +25,9 @@ declare namespace Rlog {
     constructor(config: Config);
     config: Config;
     screen: Screen;
-    checkLogFile(path: string): Promise<void>;
+    async checkLogFile(path: string): Promise<void>;
     colorizeString(str: string): string;
-    formatTime(): string;
+    formatTime(): string | number;
     encryptPrivacyContent(str: string): string;
     colorizeType(variable: any): string;
     padLines(str: string, width: number): string;
@@ -34,11 +36,11 @@ declare namespace Rlog {
   class Screen {
     constructor(toolkit: Toolkit);
     toolkit: Toolkit;
-    info(message: any, time?: string): void;
-    warning(message: any, time?: string): void;
-    error(message: any, time?: string): void;
-    success(message: any, time?: string): void;
-    exit(message: any, time?: string): void;
+    info(message: any, time?: Tostringable): void;
+    warning(message: any, time?: Tostringable): void;
+    error(message: any, time?: Tostringable): void;
+    success(message: any, time?: Tostringable): void;
+    exit(message: any, time?: Tostringable): void;
   }
 
   class File {
@@ -50,25 +52,25 @@ declare namespace Rlog {
     init(): void;
     writeLogToStream(text: string): Promise<void>;
     wirteLog(text: string): void;
-    info(message: any, time?: string): void;
-    warning(message: any, time?: string): void;
-    error(message: any, time?: string): void;
-    success(message: any, time?: string): void;
-    exit(message: any, time?: string): void;
+    info(message: any, time?: Tostringable): void;
+    warning(message: any, time?: Tostringable): void;
+    error(message: any, time?: Tostringable): void;
+    success(message: any, time?: Tostringable): void;
+    exit(message: any, time?: Tostringable): void;
   }
 }
 declare class Rlog {
-  constructor(config?: Rlog.Config);
+  constructor(config?: Partial<Rlog.Config>);
   config: Rlog.Config;
   toolkit: Rlog.Toolkit;
-  screen: Screen;
-  file: File;
-  info(message: any): void;
-  warning(message: any): void;
-  error(message: any): void;
-  success(message: any): void;
-  exit(message: any): Promise<never>;
-  log(message: any): void;
+  screen: Rlog.Screen;
+  file: Rlog.File;
+  info(...messages: any[]): void;
+  warning(...messages: any[]): void;
+  error(...messages: any[]): void;
+  success(...messages: any[]): void;
+  async exit(message: any): Promise<never>;
+  log(...messages: any[]): void;
   onExit(callback: () => void): void;
   exitListeners: (() => void)[];
 }
