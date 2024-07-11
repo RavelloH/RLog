@@ -19,6 +19,7 @@ declare namespace Rlog {
     customColorRules: CustomColorRule[];
     setConfig(obj?: Partial<Config>): void;
     setConfigGlobal(obj?: Partial<Config>): void;
+    screenLength: number;
   }
 
   class Toolkit {
@@ -71,7 +72,7 @@ declare class Rlog {
   success(...messages: any[]): void;
   async exit(message: any): Promise<never>;
   log(...messages: any[]): void;
-  progress(num: number, max: number): void {}
+  progress(num: number, max: number): void;
   onExit(callback: () => void): void;
   exitListeners: (() => void)[];
 }
