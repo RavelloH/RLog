@@ -72,6 +72,7 @@ Rlog是rlog-js的主类，用于创建日志实例，会自动调用File和Scree
 - `success(message)`：打印一条成功日志，并将其写入日志文件。
 - `exit(message)`：打印一条退出日志，并将其写入日志文件，然后终止应用程序。
 - `log(message)`: 自动识别message类型并调用相关函数。
+- `progress(num,max)`: 打印进度条，num为当前进度，max为总进度
 
 ### Config
 
@@ -87,6 +88,8 @@ Config是一个用于配置rlog-js的类。可设置的项，详见[#配置](#�
 - `timezone`（string）：时区，默认为"GMT"。
 - `blockedWordsList`（Array\<string\>）：需要屏蔽的敏感词列表，默认为空数组。
 - `customColorRules`（Array\<{reg: string, color: string}\>）：自定义的颜色规则列表，默认包含一些常用规则。
+- `screenLength`（number）：屏幕输出的最大宽度，在载入RLog时自动获取。
+
 
 Config类提供了以下方法：
 
@@ -147,6 +150,31 @@ rlog-js提供了一个回调`onExit`，用来在退出程序之前执行（如�
 rlog.onExit(() => {
   console.log('rlog.exit() called and event triggered.');
 });
+```
+
+## 进度条
+
+rlog-js提供了一个进度条`progress`，可以在控制台中显示进度条。
+一个可用的示例如下：
+
+```js
+const Rlog = require("./index.js");
+const rlog = new Rlog();
+
+rlog.log('当一个progress单独出现时，不会影响上下文')
+rlog.progress(168,1668)
+rlog.log('当更多progress一块出现时，屏幕只显示最新的')
+
+let i = 0
+let a = setInterval(()=>{
+    i +=1
+    if (i == 234) {
+        clearImmediate(a)
+        process.exit()
+    }
+    rlog.progress(i,233)
+},10)
+
 ```
 
 ## 配置

@@ -71,6 +71,7 @@ declare class Rlog {
   success(...messages: any[]): void;
   async exit(message: any): Promise<never>;
   log(...messages: any[]): void;
+  progress(num: number, max: number): void {}
   onExit(callback: () => void): void;
   exitListeners: (() => void)[];
 }

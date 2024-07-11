@@ -14,6 +14,7 @@ Config.prototype = {
   timeFormat: "YYYY-MM-DD HH:mm:ss.SSS",
   timezone: undefined,
   blockedWordsList: [],
+  screenLength: process.stdout.columns,
   customColorRules: [
     {
       reg: "false",
@@ -100,20 +101,19 @@ class Toolkit {
     const str = this.config.timeFormat;
     const timezone = this.config.timezone;
     if (timezone) {
-    if (str === "timestamp") {
-      return now.valueOf();
-    } else if (str === "ISO") {
-      return now.tz(timezone).toISOString();
-    } else if (str === "GMT") {
-      return now.tz("GMT").format("YYYY-MM-DDTHH:mm:ss.SSS") + "Z";
-    } else if (str === "UTC") {
-      return now.utc().format();
+      if (str === "timestamp") {
+        return now.valueOf();
+      } else if (str === "ISO") {
+        return now.tz(timezone).toISOString();
+      } else if (str === "GMT") {
+        return now.tz("GMT").format("YYYY-MM-DDTHH:mm:ss.SSS") + "Z";
+      } else if (str === "UTC") {
+        return now.utc().format();
+      } else {
+        return now.tz(timezone).format(str);
+      }
     } else {
-      return now.tz(timezone).format(str);
-    }
-    }
-    else {
-        return now.format(str)
+      return now.format(str);
     }
   }
 
@@ -180,61 +180,61 @@ class Screen {
   toolkit = null;
   info(message, time) {
     const timeheader = `[${time || this.toolkit.formatTime()}]`;
-    console.log(
+    process.stdout.write(
       `${timeheader}[${chalk.cyan("INFO")}] ${this.toolkit.colorizeString(
         this.toolkit.encryptPrivacyContent(
           this.toolkit.padLines(
             this.toolkit.colorizeType(message),
-            timeheader.length + 7,
-          ),
-        ),
-      )}`,
+            timeheader.length + 7
+          )
+        )
+      )}\n`
     );
   }
   warning(message, time) {
     const timeheader = `[${time || this.toolkit.formatTime()}]`;
-    console.log(
+    process.stdout.write(
       `${timeheader}[${chalk.yellow("WARN")}] ${this.toolkit.colorizeString(
         this.toolkit.encryptPrivacyContent(
           this.toolkit.padLines(
             this.toolkit.colorizeType(message),
-            timeheader.length + 7,
-          ),
-        ),
-      )}`,
+            timeheader.length + 7
+          )
+        )
+      )}\n`
     );
   }
   error(message, time) {
     const timeheader = `[${time || this.toolkit.formatTime()}]`;
-    console.log(
+    process.stdout.write(
       `${timeheader}[${chalk.red("ERR!")}] ${this.toolkit.colorizeString(
         this.toolkit.encryptPrivacyContent(
           this.toolkit.padLines(
             this.toolkit.colorizeType(message),
-            timeheader.length + 7,
-          ),
-        ),
-      )}`,
+            timeheader.length + 7
+          )
+        )
+      )}\n`
     );
   }
   success(message, time) {
     const timeheader = `[${time || this.toolkit.formatTime()}]`;
-    console.log(
+    process.stdout.write(
       `${timeheader}[${chalk.green("SUCC")}] ${this.toolkit.colorizeString(
         this.toolkit.encryptPrivacyContent(
-          this.toolkit.padLines(chalk.green(message), timeheader.length + 7),
-        ),
-      )}`,
+          this.toolkit.padLines(chalk.green(message), timeheader.length + 7)
+        )
+      )}\n`
     );
   }
   exit(message, time) {
     const timeheader = `[${time || this.toolkit.formatTime()}]`;
-    console.log(
+    process.stdout.write(
       `${timeheader}[${chalk.bold.red("EXIT")}] ${this.toolkit.colorizeString(
         this.toolkit.encryptPrivacyContent(
-          this.toolkit.padLines(chalk.bold.red(message), timeheader.length + 7),
-        ),
-      )}`,
+          this.toolkit.padLines(chalk.bold.red(message), timeheader.length + 7)
+        )
+      )}\n`
     );
   }
 }
@@ -263,7 +263,7 @@ class File {
           flags: "a",
         });
         this.screen.info(
-          "The log will be written to " + this.config.logFilePath,
+          "The log will be written to " + this.config.logFilePath
         );
       } catch (err) {
         this.screen.exit("Error creating log stream: ", err);
@@ -289,7 +289,7 @@ class File {
     if (this.config.logFilePath) {
       if (!this.logStream) {
         this.screen.warning(
-          "RLog not initialized, automatic execution in progress...",
+          "RLog not initialized, automatic execution in progress..."
         );
         this.init();
       }
@@ -303,8 +303,8 @@ class File {
         time || this.toolkit.formatTime()
       }][INFO] ${this.toolkit.encryptPrivacyContent(
         message,
-        this.config.blockedWordsList,
-      )}`,
+        this.config.blockedWordsList
+      )}`
     );
   }
   warning(message, time) {
@@ -313,8 +313,8 @@ class File {
         time || this.toolkit.formatTime()
       }][WARNING] ${this.toolkit.encryptPrivacyContent(
         message,
-        this.config.blockedWordsList,
-      )}`,
+        this.config.blockedWordsList
+      )}`
     );
   }
   error(message, time) {
@@ -323,8 +323,8 @@ class File {
         time || this.toolkit.formatTime()
       }][ERROR] ${this.toolkit.encryptPrivacyContent(
         message,
-        this.config.blockedWordsList,
-      )}`,
+        this.config.blockedWordsList
+      )}`
     );
   }
   success(message, time) {
@@ -333,8 +333,8 @@ class File {
         time || this.toolkit.formatTime()
       }][SUCCESS] ${this.toolkit.encryptPrivacyContent(
         message,
-        this.config.blockedWordsList,
-      )}`,
+        this.config.blockedWordsList
+      )}`
     );
   }
   exit(message, time) {
@@ -343,8 +343,8 @@ class File {
         time || this.toolkit.formatTime()
       }][EXIT] ${this.toolkit.encryptPrivacyContent(
         message,
-        this.config.blockedWordsList,
-      )}`,
+        this.config.blockedWordsList
+      )}`
     );
   }
 }
@@ -383,6 +383,34 @@ class Rlog {
   warning = this.#genApi("warning");
   error = this.#genApi("error");
   success = this.#genApi("success");
+  progress = (num, max) => {
+    const timeheader = `[${this.toolkit.formatTime()}]`;
+    let percent = Math.floor(100 * (num / max)) + "%" + "";
+    percent = " ".repeat(4 - percent.length) + percent;
+    const state = `${" ".repeat(
+      max.toString().length - num.toString().length
+    )}${num}/${max}`;
+    const avaliableLength =
+      process.stdout.columns -
+      timeheader.length -
+      6 -
+      3 -
+      state.length -
+      1 -
+      percent.length;
+    const doneLength = Math.floor(avaliableLength * (num / max));
+    if (avaliableLength <= 1) {
+      process.stdout.write(
+        `\r${timeheader}[${chalk.magenta("PROG")}] ${percent} ${state}`
+      );
+    } else {
+      process.stdout.write(
+        `\r${timeheader}[${chalk.magenta("PROG")}] [${"|".repeat(
+          doneLength
+        )}${" ".repeat(avaliableLength - doneLength)}]${percent} ${state}`
+      );
+    }
+  };
   async exit(message) {
     const time = this.toolkit.formatTime();
     this.screen.exit(message, time);

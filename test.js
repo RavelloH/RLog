@@ -78,6 +78,9 @@ rlog.info("");
 rlog.log("Hello world!", "This is a message", 123, true);
 rlog.info("Hello world!", "This is a message", 123, true);
 
+rlog.progress(10,100)
+rlog.progress(50,100)
+rlog.progress(100,100)
 
 rlog.info("Test security exit");
 rlog.exit("Force to exit after saving logs");
