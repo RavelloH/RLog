@@ -373,7 +373,7 @@ class Rlog {
   file = null;
   #genApi(key) {
     return (...args) => {
-      const message = args.join(" ");
+      const message = args.length === 1 ? args[0] : args.join(" ");
       const time = this.toolkit.formatTime();
       this.screen[key](message, time);
       this.file[key](message, time);
