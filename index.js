@@ -170,6 +170,16 @@ class Toolkit {
 
     return paddedLines.join("\n");
   }
+
+  stringify(obj) {
+    if (typeof obj === "string") {
+      return obj;
+    }
+    if (typeof obj === "object") {
+      return JSON.stringify(obj, null, 2);
+    }
+    return obj.toString();
+  }
 }
 
 class Screen {
@@ -302,7 +312,7 @@ class File {
       `[${
         time || this.toolkit.formatTime()
       }][INFO] ${this.toolkit.encryptPrivacyContent(
-        message,
+        this.toolkit.stringify(message),
         this.config.blockedWordsList
       )}`
     );
@@ -312,7 +322,7 @@ class File {
       `[${
         time || this.toolkit.formatTime()
       }][WARNING] ${this.toolkit.encryptPrivacyContent(
-        message,
+        this.toolkit.stringify(message),
         this.config.blockedWordsList
       )}`
     );
@@ -322,7 +332,7 @@ class File {
       `[${
         time || this.toolkit.formatTime()
       }][ERROR] ${this.toolkit.encryptPrivacyContent(
-        message,
+        this.toolkit.stringify(message),
         this.config.blockedWordsList
       )}`
     );
@@ -332,7 +342,7 @@ class File {
       `[${
         time || this.toolkit.formatTime()
       }][SUCCESS] ${this.toolkit.encryptPrivacyContent(
-        message,
+        this.toolkit.stringify(message),
         this.config.blockedWordsList
       )}`
     );
@@ -342,7 +352,7 @@ class File {
       `[${
         time || this.toolkit.formatTime()
       }][EXIT] ${this.toolkit.encryptPrivacyContent(
-        message,
+        this.toolkit.stringify(message),
         this.config.blockedWordsList
       )}`
     );
