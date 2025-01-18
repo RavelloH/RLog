@@ -4,7 +4,8 @@
 
 rlog-js是一个用于记录日志、统一日志格式并优化输出的npm包，基于nodejs可写流异步写入log至文件，提供了一系列的接口，用于在控制台和文件中打印日志。同时，还提供了一些工具函数，用于格式化日志信息、加密敏感内容、为不同类型及不同关键词上色等等。
 
-![image](https://github.com/RavelloH/RLog/assets/68409330/fa441294-fd77-4176-a547-a26cc12e8ae1)
+![image](https://github.com/user-attachments/assets/bd5e1c3e-b872-4844-9f40-a19587eda847)
+
 
 
 
