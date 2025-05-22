@@ -92,6 +92,7 @@ Config是一个用于配置rlog-js的类。可设置的项，详见[#配置](#�
 - `blockedWordsList`（Array\<string\>）：需要屏蔽的敏感词列表，默认为空数组。
 - `customColorRules`（Array\<{reg: string, color: string}\>）：自定义的颜色规则列表，默认包含一些常用规则。
 - `screenLength`（number）：屏幕输出的最大宽度，在载入RLog时自动获取。
+- `joinChar`（string）：传入多个参数时，输出的连接符，默认为空格。
 
 
 Config类提供了以下方法：

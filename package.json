@@ -26,6 +26,7 @@
   "dependencies": {
     "@types/node": "",
     "chalk": "^4.1.2",
+    "fs": "0.0.1-security",
     "fs-extra": "^11.2.0",
     "moment": "^2.29.4",
     "moment-timezone": "^0.5.43"

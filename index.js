@@ -88,13 +88,51 @@ class Toolkit {
   }
 
   colorizeString(str) {
-    this.config.customColorRules.forEach((setting) => {
-      const { reg, color } = setting;
-      const regex = new RegExp(reg, "g");
-      str = str.replace(regex, (match) => chalk[color](match));
-    });
+    if (!str || typeof str !== 'string') return str;
+    const ansiColorRegex = /(\u001b\[\d+m)/g;
+    const parts = str.split(ansiColorRegex);
+    
+    let activeColorStack = [];
+    const result = [];
 
-    return str;
+    for (const part of parts) {
+      if (part.startsWith('\u001b[')) {
+        if (part === '\u001b[39m') {
+          activeColorStack = [];
+        } else {
+          activeColorStack.push(part);
+        }
+        result.push(part);
+        continue;
+      }
+
+      if (!part) continue;
+      
+      const currentColorState = [...activeColorStack];
+      let processedText = part;
+      for (const { reg, color } of this.config.customColorRules) {
+        const regex = new RegExp(reg, 'g');
+        
+        processedText = processedText.replace(regex, (match) => {
+          const coloredMatch = chalk[color](match);
+          const colorParts = coloredMatch.split(ansiColorRegex).filter(Boolean);
+          const colorStart = colorParts[0];
+          const matchText = colorParts
+            .filter(p => !p.startsWith('\u001b['))
+            .join('');
+
+          const restoreColor = currentColorState.length > 0
+            ? currentColorState.join('')
+            : '\u001b[39m';
+
+          return colorStart + matchText + restoreColor;
+        });
+      }
+
+      result.push(processedText);
+    }
+
+    return result.join('');
   }
 
   formatTime() {
@@ -384,7 +422,8 @@ class Rlog {
   file = null;
   #genApi(key) {
     return (...args) => {
-      const message = args.length === 1 ? args[0] : args.join(this.config.joinChar);
+      const message =
+        args.length === 1 ? args[0] : args.join(this.config.joinChar);
       const time = this.toolkit.formatTime();
       this.screen[key](message, time);
       this.file[key](message, time);
