@@ -15,7 +15,7 @@ declare namespace Rlog {
     logFilePath?: string;
     timeFormat: string;
     joinChar: string;
-    timezone: string;
+    timezone?: string;
     blockedWordsList: string[];
     customColorRules: CustomColorRule[];
     setConfig(obj?: Partial<Config>): void;
@@ -33,6 +33,7 @@ declare namespace Rlog {
     encryptPrivacyContent(str: string): string;
     colorizeType(variable: any): string;
     padLines(str: string, width: number): string;
+    stringify(obj: any): string;
   }
 
   class Screen {
@@ -53,7 +54,7 @@ declare namespace Rlog {
     logStream: NodeJS.WriteStream;
     init(): void;
     writeLogToStream(text: string): Promise<void>;
-    wirteLog(text: string): void;
+    writeLog(text: string): void;
     info(message: any, time?: Tostringable): void;
     warning(message: any, time?: Tostringable): void;
     error(message: any, time?: Tostringable): void;
@@ -62,6 +63,10 @@ declare namespace Rlog {
   }
 }
 declare class Rlog {
+  static Config: typeof Rlog.Config;
+  static Toolkit: typeof Rlog.Toolkit;
+  static Screen: typeof Rlog.Screen;
+  static File: typeof Rlog.File;
   constructor(config?: Partial<Rlog.Config>);
   config: Rlog.Config;
   toolkit: Rlog.Toolkit;

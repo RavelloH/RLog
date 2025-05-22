@@ -88,16 +88,16 @@ class Toolkit {
   }
 
   colorizeString(str) {
-    if (!str || typeof str !== 'string') return str;
+    if (!str || typeof str !== "string") return str;
     const ansiColorRegex = /(\u001b\[\d+m)/g;
     const parts = str.split(ansiColorRegex);
-    
+
     let activeColorStack = [];
     const result = [];
 
     for (const part of parts) {
-      if (part.startsWith('\u001b[')) {
-        if (part === '\u001b[39m') {
+      if (part.startsWith("\u001b[")) {
+        if (part === "\u001b[39m") {
           activeColorStack = [];
         } else {
           activeColorStack.push(part);
@@ -107,23 +107,24 @@ class Toolkit {
       }
 
       if (!part) continue;
-      
+
       const currentColorState = [...activeColorStack];
       let processedText = part;
       for (const { reg, color } of this.config.customColorRules) {
-        const regex = new RegExp(reg, 'g');
-        
+        const regex = new RegExp(reg, "g");
+
         processedText = processedText.replace(regex, (match) => {
           const coloredMatch = chalk[color](match);
           const colorParts = coloredMatch.split(ansiColorRegex).filter(Boolean);
           const colorStart = colorParts[0];
           const matchText = colorParts
-            .filter(p => !p.startsWith('\u001b['))
-            .join('');
+            .filter((p) => !p.startsWith("\u001b["))
+            .join("");
 
-          const restoreColor = currentColorState.length > 0
-            ? currentColorState.join('')
-            : '\u001b[39m';
+          const restoreColor =
+            currentColorState.length > 0
+              ? currentColorState.join("")
+              : "\u001b[39m";
 
           return colorStart + matchText + restoreColor;
         });
@@ -132,82 +133,98 @@ class Toolkit {
       result.push(processedText);
     }
 
-    return result.join('');
+    return result.join("");
   }
 
   formatTime() {
     const now = moment();
-    const str = this.config.timeFormat;
-    const timezone = this.config.timezone;
-    if (timezone) {
-      if (str === "timestamp") {
-        return now.valueOf();
-      } else if (str === "ISO") {
-        return now.tz(timezone).toISOString();
-      } else if (str === "GMT") {
-        return now.tz("GMT").format("YYYY-MM-DDTHH:mm:ss.SSS") + "Z";
-      } else if (str === "UTC") {
-        return now.utc().format();
-      } else {
-        return now.tz(timezone).format(str);
-      }
-    } else {
-      return now.format(str);
+    const { timeFormat, timezone } = this.config;
+
+    if (timeFormat === "timestamp") {
+      return now.valueOf();
     }
+
+    if (timezone) {
+      switch (timeFormat) {
+        case "ISO":
+          return now.tz(timezone).toISOString();
+        case "GMT":
+          return now.tz("GMT").format("YYYY-MM-DDTHH:mm:ss.SSS") + "Z";
+        case "UTC":
+          return now.utc().format();
+        default:
+          return now.tz(timezone).format(timeFormat);
+      }
+    }
+
+    return now.format(timeFormat);
   }
 
   encryptPrivacyContent(str) {
-    if (typeof str !== "string" || this.config.blockedWordsList.length === 0) {
+    if (typeof str !== "string" || !this.config.blockedWordsList?.length) {
       return str;
     }
-    this.config.blockedWordsList.forEach((regex) => {
-      const pattern = new RegExp(regex, "g");
-      const replacement = "*".repeat(regex.length);
-      str = str.replace(pattern, replacement);
-    });
-
-    return str;
+    if (!this._regexCache) {
+      this._regexCache = this.config.blockedWordsList.map((pattern) => {
+        try {
+          return new RegExp(pattern, "g");
+        } catch (e) {
+          return new RegExp(
+            pattern.replace(/[-\/\\^$*+?.()|[\]{}]/g, "\\$&"),
+            "g"
+          );
+        }
+      });
+    }
+    return this._regexCache.reduce((result, regex, index) => {
+      return result.replace(regex, (match) => {
+        return "*".repeat(match.length);
+      });
+    }, str);
   }
 
   colorizeType(variable) {
-    let type = typeof variable;
-    let coloredStr;
+    if (variable === null) return chalk.red("null");
+    if (variable === undefined) return chalk.gray("undefined");
+
+    const type = typeof variable;
 
     switch (type) {
       case "string":
-        coloredStr = variable;
-        break;
+        return variable;
       case "number":
-        coloredStr = chalk.blue(variable);
-        break;
+        return chalk.blue(variable.toString());
       case "boolean":
-        coloredStr = chalk.green(variable);
-        break;
+        return variable ? chalk.green("true") : chalk.red("false");
       case "object":
-        coloredStr = chalk.magenta(JSON.stringify(variable));
-        break;
+        try {
+          if (Array.isArray(variable)) {
+            return chalk.yellow(JSON.stringify(variable, null, 2));
+          }
+          return chalk.magenta(JSON.stringify(variable, null, 2));
+        } catch (e) {
+          return chalk.red("[Circular Object]");
+        }
       case "function":
-        coloredStr = chalk.cyan(variable.toString());
-        break;
+        return chalk.cyan(variable.toString().split("\n")[0] + "...");
+      case "symbol":
+        return chalk.yellow(variable.toString());
       default:
-        coloredStr = variable;
+        return String(variable);
     }
-
-    return coloredStr;
   }
 
   padLines(str, width) {
-    let lines = str.split("\n");
-    let paddedLines = [];
-
-    paddedLines.push(lines[0]);
-
-    for (let i = 1; i < lines.length; i++) {
-      let padding = " ".repeat(width);
-      paddedLines.push(padding + lines[i]);
-    }
-
-    return paddedLines.join("\n");
+    if (!str) return '';
+    
+    str = String(str);
+    
+    if (!str.includes('\n')) return str;
+    
+    const lines = str.split('\n');
+    const padding = ' '.repeat(width);
+    
+    return lines[0] + '\n' + lines.slice(1).map(line => padding + line).join('\n');
   }
 
   stringify(obj) {
@@ -227,78 +244,57 @@ class Screen {
   }
   /**@type {Toolkit} */
   toolkit = null;
+  _formatMessage(type, color, message, time) {
+    const timeheader = `[${time || this.toolkit.formatTime()}]`;
+    const colorizedType = chalk[color](type);
+    
+    const processedMessage = this.toolkit.encryptPrivacyContent(
+      this.toolkit.padLines(
+        type === 'SUCC' || type === 'EXIT' ? 
+          chalk[color](message) : 
+          this.toolkit.colorizeType(message),
+        timeheader.length + 7
+      )
+    );
+    
+    return `${timeheader}[${colorizedType}] ${this.toolkit.colorizeString(processedMessage)}\n`;
+  }
+  _log(type, color, message, time) {
+    process.stdout.write(this._formatMessage(type, color, message, time));
+  }
+
   info(message, time) {
-    const timeheader = `[${time || this.toolkit.formatTime()}]`;
-    process.stdout.write(
-      `${timeheader}[${chalk.cyan("INFO")}] ${this.toolkit.colorizeString(
-        this.toolkit.encryptPrivacyContent(
-          this.toolkit.padLines(
-            this.toolkit.colorizeType(message),
-            timeheader.length + 7
-          )
-        )
-      )}\n`
-    );
+    this._log('INFO', 'cyan', message, time);
   }
+
   warning(message, time) {
-    const timeheader = `[${time || this.toolkit.formatTime()}]`;
-    process.stdout.write(
-      `${timeheader}[${chalk.yellow("WARN")}] ${this.toolkit.colorizeString(
-        this.toolkit.encryptPrivacyContent(
-          this.toolkit.padLines(
-            this.toolkit.colorizeType(message),
-            timeheader.length + 7
-          )
-        )
-      )}\n`
-    );
+    this._log('WARN', 'yellow', message, time);
   }
+
   error(message, time) {
-    const timeheader = `[${time || this.toolkit.formatTime()}]`;
-    process.stdout.write(
-      `${timeheader}[${chalk.red("ERR!")}] ${this.toolkit.colorizeString(
-        this.toolkit.encryptPrivacyContent(
-          this.toolkit.padLines(
-            this.toolkit.colorizeType(message),
-            timeheader.length + 7
-          )
-        )
-      )}\n`
-    );
+    this._log('ERR!', 'red', message, time);
   }
+
   success(message, time) {
-    const timeheader = `[${time || this.toolkit.formatTime()}]`;
-    process.stdout.write(
-      `${timeheader}[${chalk.green("SUCC")}] ${this.toolkit.colorizeString(
-        this.toolkit.encryptPrivacyContent(
-          this.toolkit.padLines(chalk.green(message), timeheader.length + 7)
-        )
-      )}\n`
-    );
+    this._log('SUCC', 'green', message, time);
   }
+
   exit(message, time) {
-    const timeheader = `[${time || this.toolkit.formatTime()}]`;
-    process.stdout.write(
-      `${timeheader}[${chalk.bold.red("EXIT")}] ${this.toolkit.colorizeString(
-        this.toolkit.encryptPrivacyContent(
-          this.toolkit.padLines(chalk.bold.red(message), timeheader.length + 7)
-        )
-      )}\n`
-    );
+    this._log('EXIT', 'red', message, time, true);
   }
 }
 
 class File {
   constructor(toolkit, config, screen) {
-    this.config = config;
     this.toolkit = toolkit;
+    this.config = config;
     this.screen = screen;
     this.init();
   }
-  /**@type {Config} */
-  config = null;
   /**@type {Toolkit} */
   toolkit = null;
+  /**@type {Config} */
+  config = null;
   /**@type {Screen} */
   screen = null;
   /**@type {fs.WriteStream} */
@@ -311,90 +307,62 @@ class File {
         this.logStream = fs.createWriteStream(this.config.logFilePath, {
           flags: "a",
         });
-        this.screen.info(
-          "The log will be written to " + this.config.logFilePath
-        );
+        this.screen.info("The log will be written to " + this.config.logFilePath);
       } catch (err) {
-        this.screen.exit("Error creating log stream: ", err);
+        this.screen.error("Error creating log stream: " + err);
       }
     }
   }
+
+  _formatMessage(type, message, time) {
+    return `[${time || this.toolkit.formatTime()}][${type}] ${
+      this.toolkit.encryptPrivacyContent(this.toolkit.stringify(message))
+    }`;
+  }
+
+  _log(type, message, time) {
+    if (!this.config.logFilePath) return;
+    
+    if (!this.logStream) {
+      this.screen.warning("RLog not initialized, automatic execution in progress...");
+      this.init();
+      if (!this.logStream) return;
+    }
+    
+    this.logStream.write(this._formatMessage(type, message, time) + "\n");
+  }
+
   writeLogToStream(text) {
     return new Promise((resolve, reject) => {
       if (this.logStream) {
         this.logStream.write(text, (err) => {
-          if (err) {
-            reject(err);
-          } else {
-            resolve();
-          }
+          if (err) reject(err);
+          else resolve();
         });
       } else {
         reject(new Error("Log stream not initialized"));
       }
     });
   }
-  writeLog(text) {
-    if (this.config.logFilePath) {
-      if (!this.logStream) {
-        this.screen.warning(
-          "RLog not initialized, automatic execution in progress..."
-        );
-        this.init();
-      }
-      this.logStream.write(`${text}\n`);
-    }
-  }
 
   info(message, time) {
-    this.writeLog(
-      `[${
-        time || this.toolkit.formatTime()
-      }][INFO] ${this.toolkit.encryptPrivacyContent(
-        this.toolkit.stringify(message),
-        this.config.blockedWordsList
-      )}`
-    );
+    this._log('INFO', message, time);
   }
+
   warning(message, time) {
-    this.writeLog(
-      `[${
-        time || this.toolkit.formatTime()
-      }][WARNING] ${this.toolkit.encryptPrivacyContent(
-        this.toolkit.stringify(message),
-        this.config.blockedWordsList
-      )}`
-    );
+    this._log('WARNING', message, time);
   }
+
   error(message, time) {
-    this.writeLog(
-      `[${
-        time || this.toolkit.formatTime()
-      }][ERROR] ${this.toolkit.encryptPrivacyContent(
-        this.toolkit.stringify(message),
-        this.config.blockedWordsList
-      )}`
-    );
+    this._log('ERROR', message, time);
   }
+
   success(message, time) {
-    this.writeLog(
-      `[${
-        time || this.toolkit.formatTime()
-      }][SUCCESS] ${this.toolkit.encryptPrivacyContent(
-        this.toolkit.stringify(message),
-        this.config.blockedWordsList
-      )}`
-    );
+    this._log('SUCCESS', message, time);
   }
+
   exit(message, time) {
-    this.writeLog(
-      `[${
-        time || this.toolkit.formatTime()
-      }][EXIT] ${this.toolkit.encryptPrivacyContent(
-        this.toolkit.stringify(message),
-        this.config.blockedWordsList
-      )}`
-    );
+    this._log('EXIT', message, time);
   }
 }
 
@@ -403,93 +371,129 @@ class Rlog {
   static Toolkit = Toolkit;
   static Screen = Screen;
   static File = File;
+
   /**
-   * @param {Config} config
+   * @param {Object} config - Configuration options for the logger
    */
   constructor(config) {
-    this.config.setConfig(config);
-    this.toolkit.screen = this.screen = new Screen(this.toolkit);
+    this.config = new Config();
+    this.config.setConfig(config || {});
+    this.toolkit = new Toolkit(this.config);
+    this.screen = new Screen(this.toolkit);
+    this.toolkit.screen = this.screen;
     this.file = new File(this.toolkit, this.config, this.screen);
     this.exitListeners = [];
+    
+    // Pre-compile regex patterns for better performance
+    this.keywordPatterns = {
+      success: /(success|ok|done|✓)/i,
+      warning: /(warn|but|notice|see|problem)/i,
+      error: /(error|fail|mistake|problem|fatal)/i,
+    };
   }
-  /**@type {Config} */
-  config = new Config();
-  /**@type {Screen} */
-  screen = null;
-  /**@type {Toolkit} */
-  toolkit = new Toolkit(this.config);
-  /**@type {File} */
-  file = null;
+
+  /**
+   * Creates logging methods that output to both screen and file
+   * @private
+   */
   #genApi(key) {
     return (...args) => {
-      const message =
-        args.length === 1 ? args[0] : args.join(this.config.joinChar);
+      const message = args.length === 1 ? args[0] : args.join(this.config.joinChar);
       const time = this.toolkit.formatTime();
       this.screen[key](message, time);
       this.file[key](message, time);
     };
   }
+
+  // Define logging methods
   info = this.#genApi("info");
   warning = this.#genApi("warning");
   error = this.#genApi("error");
   success = this.#genApi("success");
-  progress = (num, max) => {
+
+  /**
+   * Display a progress bar in the console
+   * @param {number} num - Current progress value
+   * @param {number} max - Maximum progress value
+   */
+  progress(num, max) {
     const timeheader = `[${this.toolkit.formatTime()}]`;
-    let percent = Math.floor(100 * (num / max)) + "%" + "";
-    percent = " ".repeat(4 - percent.length) + percent;
-    const state = `${" ".repeat(
-      max.toString().length - num.toString().length
-    )}${num}/${max}`;
-    const avaliableLength =
-      process.stdout.columns -
-      timeheader.length -
-      6 -
-      3 -
-      state.length -
-      1 -
-      percent.length;
-    const doneLength = Math.floor(avaliableLength * (num / max));
-    if (avaliableLength <= 1) {
+    const percent = Math.floor(100 * (num / max)) + "%";
+    const paddedPercent = " ".repeat(4 - percent.length) + percent;
+    
+    const numStr = num.toString();
+    const maxStr = max.toString();
+    const state = `${" ".repeat(maxStr.length - numStr.length)}${numStr}/${maxStr}`;
+    
+    const availableLength = process.stdout.columns - 
+      timeheader.length - 6 - 3 - state.length - 1 - paddedPercent.length;
+    
+    if (availableLength <= 1) {
       process.stdout.write(
-        `\r${timeheader}[${chalk.magenta("PROG")}] ${percent} ${state}`
+        `\r${timeheader}[${chalk.magenta("PROG")}] ${paddedPercent} ${state}`
       );
     } else {
+      const doneLength = Math.floor(availableLength * (num / max));
       process.stdout.write(
-        `\r${timeheader}[${chalk.magenta("PROG")}] [${"|".repeat(
-          doneLength
-        )}${" ".repeat(avaliableLength - doneLength)}]${percent} ${state}`
+        `\r${timeheader}[${chalk.magenta("PROG")}] [${"|".repeat(doneLength)}${" ".repeat(
+          availableLength - doneLength
+        )}]${paddedPercent} ${state}`
       );
     }
-  };
+  }
+
+  /**
+   * Exit the program with a message
+   * @param {string} message - Exit message
+   */
   async exit(message) {
     const time = this.toolkit.formatTime();
     this.screen.exit(message, time);
-    await this.file.writeLogToStream(`[${time}][EXIT]${message}\n`);
-    this.exitListeners.forEach((listener) => listener());
-    process.exit();
-  }
-  log(...args) {
-    const message = args.join(this.config.joinChar);
-    const time = this.toolkit.formatTime();
-    const keywords = {
-      success: /(success|ok|done|✓)/i,
-      warning: /(warn|but|notice|see|problem)/i,
-      error: /(error|fail|mistake|problem|fatal)/i,
-    };
-
-    for (let key in keywords) {
-      if (keywords.hasOwnProperty(key)) {
-        const regex = keywords[key];
-        if (regex.test(message)) {
-          this[key](message);
-          return;
-        }
+    
+    try {
+      await this.file.writeLogToStream(`[${time}][EXIT] ${message}\n`);
+    } catch (e) {
+      // Silently handle any errors during exit logging
+    }
+    
+    // Call all exit listeners
+    for (const listener of this.exitListeners) {
+      try {
+        listener();
+      } catch (e) {
+        // Ensure all listeners are called even if some throw errors
       }
     }
+    
+    process.exit();
+  }
+
+  /**
+   * Smart logging function that determines log level based on content
+   */
+  log(...args) {
+    const message = args.join(this.config.joinChar);
+    
+    // Check for specific patterns to determine log level
+    for (const [key, regex] of Object.entries(this.keywordPatterns)) {
+      if (regex.test(message)) {
+        this[key](message);
+        return;
+      }
+    }
+    
+    // Default to info level
     this.info(message);
   }
+
+  /**
+   * Register a function to be called before program exit
+   * @param {Function} callback - Function to call on exit
+   */
   onExit(callback) {
-    this.exitListeners.push(callback);
+    if (typeof callback === 'function') {
+      this.exitListeners.push(callback);
+    }
   }
 }
 
