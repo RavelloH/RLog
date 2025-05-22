@@ -14,6 +14,7 @@ declare namespace Rlog {
     enableColorfulOutput: boolean;
     logFilePath?: string;
     timeFormat: string;
+    joinChar: string;
     timezone: string;
     blockedWordsList: string[];
     customColorRules: CustomColorRule[];

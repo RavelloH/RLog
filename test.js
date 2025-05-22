@@ -12,7 +12,7 @@ rlog.config.setConfigGlobal({
 
 // Register an exit callback to display additional information
 rlog.onExit(() => {
-  rlog.warning('rlog.exit() called and event triggered.');
+  rlog.warning("rlog.exit() called and event triggered.");
 });
 
 function test() {
@@ -65,29 +65,34 @@ rlog.info("Asia/Shanghai");
 
 rlog.info("");
 rlog.info("Test Time Format");
-rlog.config.timeFormat = "UTC",
-rlog.info("UTC")
-rlog.config.timeFormat = "timestamp",
-rlog.info("timestamp")
-rlog.config.timeFormat = "ISO",
-rlog.info("ISO")
-rlog.config.timeFormat = "YYYY-MM-DD HH:mm:ss.SSS",
-rlog.info("YYYY-MM-DD HH:mm:ss.SSS")
+rlog.config.timeFormat = "UTC";
+rlog.info("UTC");
+rlog.config.timeFormat = "timestamp";
+rlog.info("timestamp");
+rlog.config.timeFormat = "ISO";
+rlog.info("ISO");
+rlog.config.timeFormat = "YYYY-MM-DD HH:mm:ss.SSS";
+rlog.info("YYYY-MM-DD HH:mm:ss.SSS");
 
 rlog.info("");
 rlog.log("Hello world!", "This is a message", 123, true);
 rlog.info("Hello world!", "This is a message", 123, true);
 
-rlog.progress(10,100)
-rlog.progress(50,100)
-rlog.progress(100,100)
+rlog.info("");
+rlog.info("Test joinChar");
+rlog.config.joinChar = "\n";
+rlog.log("Line 1", "Line2");
+
+rlog.progress(10, 100);
+rlog.progress(50, 100);
+rlog.progress(100, 100);
 
 rlog.info("Test security exit");
 rlog.exit("Force to exit after saving logs");
-/* console.time()
+// console.time()
 
-for (i=0;i<=1000;i++) {
-    rlog.info(i)
-}
+// for (i=0;i<=1000;i++) {
+//     rlog.info(i)
+// }
 
-console.timeEnd() */
+// console.timeEnd()

@@ -13,6 +13,7 @@ Config.prototype = {
   logFilePath: undefined,
   timeFormat: "YYYY-MM-DD HH:mm:ss.SSS",
   timezone: undefined,
+  joinChar: " ",
   blockedWordsList: [],
   screenLength: process.stdout.columns,
   customColorRules: [
@@ -383,7 +384,7 @@ class Rlog {
   file = null;
   #genApi(key) {
     return (...args) => {
-      const message = args.length === 1 ? args[0] : args.join(" ");
+      const message = args.length === 1 ? args[0] : args.join(this.config.joinChar);
       const time = this.toolkit.formatTime();
       this.screen[key](message, time);
       this.file[key](message, time);
@@ -429,7 +430,7 @@ class Rlog {
     process.exit();
   }
   log(...args) {
-    const message = args.join(" ");
+    const message = args.join(this.config.joinChar);
     const time = this.toolkit.formatTime();
     const keywords = {
       success: /(success|ok|done|✓)/i,
