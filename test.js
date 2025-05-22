@@ -89,6 +89,8 @@ rlog.progress(100, 100);
 
 rlog.info("Test security exit");
 rlog.exit("Force to exit after saving logs");
+
+console.log("This will not be printed");
 // console.time()
 
 // for (i=0;i<=1000;i++) {

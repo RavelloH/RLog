@@ -446,26 +446,18 @@ class Rlog {
    * Exit the program with a message
    * @param {string} message - Exit message
    */
-  async exit(message) {
+  exit(message) {
     const time = this.toolkit.formatTime();
     this.screen.exit(message, time);
-    
-    try {
-      await this.file.writeLogToStream(`[${time}][EXIT] ${message}\n`);
-    } catch (e) {
-      // Silently handle any errors during exit logging
-    }
-    
-    // Call all exit listeners
-    for (const listener of this.exitListeners) {
-      try {
-        listener();
-      } catch (e) {
-        // Ensure all listeners are called even if some throw errors
-      }
-    }
-    
-    process.exit();
+    const ExitError = new Error('RLog_EXIT_PROCESS');
+    ExitError.isRLogExit = true;
+    ExitError.message = message;
+    ExitError.time = time;
+    global.__RLOG_EXIT_CONTEXT = {
+      file: this.file,
+      exitListeners: this.exitListeners
+    };
+    throw ExitError;
   }
 
   /**
@@ -497,9 +489,44 @@ class Rlog {
   }
 }
 
+process.on('uncaughtException', async (err) => {
+  if (err.isRLogExit && global.__RLOG_EXIT_CONTEXT) {
+    const { file, exitListeners } = global.__RLOG_EXIT_CONTEXT;
+    
+    try {
+      if (file.logStream) {
+        file.exit(err.message, err.time);
+        if (typeof file.logStream.flush === 'function') {
+          file.logStream.flush();
+        }
+        await new Promise((resolve, reject) => {
+          file.logStream.on('finish', resolve);
+          file.logStream.on('error', reject);
+          file.logStream.end();
+        });
+      }
+      await Promise.all(exitListeners.map(listener => {
+        try {
+          return Promise.resolve(listener());
+        } catch (e) {
+          return Promise.resolve();
+        }
+      }));
+    } catch (e) {
+      console.error("Error during log finalization:", e);
+    } finally {
+      global.__RLOG_EXIT_CONTEXT = null;
+      process.exit(0);
+    }
+  } else {
+    console.error('Uncaught exception:', err);
+    process.exit(1);
+  }
+});
+
 process.on("beforeExit", async () => {
   const rlog = new Rlog();
-  if (rlog.file.logStream) {
+  if (rlog.file.logStream && !rlog.file.logStream.closed && !rlog.file.logStream.destroyed) {
     await new Promise((resolve) => {
       rlog.file.logStream.end(resolve);
     });

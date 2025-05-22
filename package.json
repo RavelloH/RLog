@@ -1,6 +1,6 @@
 {
   "name": "rlog-js",
-  "version": "1.4.2",
+  "version": "1.5.0",
   "description": "A module for optimizing log output in node.js, supporting colored output, embedded timestamp, log streaming writing, type coloring, keyword coloring, and so on.",
   "main": "index.js",
   "scripts": {
