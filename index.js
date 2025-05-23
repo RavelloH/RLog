@@ -16,6 +16,7 @@ Config.prototype = {
   joinChar: " ",
   blockedWordsList: [],
   screenLength: process.stdout.columns,
+  autoInit: true,
   customColorRules: [
     {
       reg: "false",
@@ -289,7 +290,7 @@ class File {
     this.toolkit = toolkit;
     this.config = config;
     this.screen = screen;
-    this.init();
+    if (this.config.autoInit)this.init();
   }
   /**@type {Toolkit} */
   toolkit = null;
@@ -301,15 +302,21 @@ class File {
   logStream = null;
 
   init() {
-    if (this.config.logFilePath) {
+    if (this.config.logFilePath && !this.logStream) {
       this.toolkit.checkLogFile(this.config.logFilePath);
       try {
         this.logStream = fs.createWriteStream(this.config.logFilePath, {
           flags: "a",
         });
         this.screen.info("The log will be written to " + this.config.logFilePath);
+        this.logStream.on("error", (err) => {
+          this.exit("Error writing to log file: " + err);
+        });
+        this.logStream.on("finish", () => {
+          this.screen.info("Log stream closed.");
+        });
       } catch (err) {
-        this.screen.error("Error creating log stream: " + err);
+        this.exit("Error creating log stream: " + err);
       }
     }
   }
@@ -525,10 +532,12 @@ process.on('uncaughtException', async (err) => {
 });
 
 process.on("beforeExit", async () => {
-  const rlog = new Rlog();
-  if (rlog.file.logStream && !rlog.file.logStream.closed && !rlog.file.logStream.destroyed) {
+  const ctx = global.__RLOG_EXIT_CONTEXT;
+  if (ctx?.file?.logStream) {
+    const stream = ctx.file.logStream;
     await new Promise((resolve) => {
-      rlog.file.logStream.end(resolve);
+      stream.once("finish", resolve);
+      stream.end();
     });
   }
 });

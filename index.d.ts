@@ -16,6 +16,7 @@ declare namespace Rlog {
     timeFormat: string;
     joinChar: string;
     timezone?: string;
+    autoInit: boolean;
     blockedWordsList: string[];
     customColorRules: CustomColorRule[];
     setConfig(obj?: Partial<Config>): void;
