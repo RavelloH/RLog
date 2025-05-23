@@ -17,7 +17,7 @@ Config.prototype = {
   blockedWordsList: [],
   screenLength: process.stdout.columns,
   autoInit: true,
-  slient: false,
+  silent: false,
   customColorRules: [
     {
       reg: "false",
@@ -318,7 +318,7 @@ class File {
         this.logStream = fs.createWriteStream(this.config.logFilePath, {
           flags: "a",
         });
-        if (!this.config.slient)
+        if (!this.config.silent)
           this.screen.info(
             "The log will be written to " + this.config.logFilePath
           );
@@ -343,7 +343,7 @@ class File {
     if (!this.config.logFilePath) return;
 
     if (!this.logStream) {
-      if (!this.config.slient)
+      if (!this.config.silent)
         this.screen.warning(
           "RLog not initialized, automatic init in progress..."
         );

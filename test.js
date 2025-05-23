@@ -14,7 +14,7 @@ rlog.config.setConfigGlobal({
   blockedWordsList: ["world", "[0-9]{9}"],
 });
 rlog.config.setConfig({
-  slient: false,
+  silent: false,
 })
 
 // Set config directly
