@@ -13,6 +13,9 @@ const rlog = new Rlog({
 rlog.config.setConfigGlobal({
   blockedWordsList: ["world", "[0-9]{9}"],
 });
+rlog.config.setConfig({
+  slient: false,
+})
 
 // Set config directly
 // 直接设置配置

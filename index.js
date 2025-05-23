@@ -17,6 +17,7 @@ Config.prototype = {
   blockedWordsList: [],
   screenLength: process.stdout.columns,
   autoInit: true,
+  slient: false,
   customColorRules: [
     {
       reg: "false",
@@ -317,14 +318,12 @@ class File {
         this.logStream = fs.createWriteStream(this.config.logFilePath, {
           flags: "a",
         });
-        this.screen.info(
-          "The log will be written to " + this.config.logFilePath
-        );
+        if (!this.config.slient)
+          this.screen.info(
+            "The log will be written to " + this.config.logFilePath
+          );
         this.logStream.on("error", (err) => {
           this.exit("Error writing to log file: " + err);
-        });
-        this.logStream.on("finish", () => {
-          this.screen.info("Log stream closed.");
         });
       } catch (err) {
         this.exit("Error creating log stream: " + err);
@@ -344,9 +343,10 @@ class File {
     if (!this.config.logFilePath) return;
 
     if (!this.logStream) {
-      this.screen.warning(
-        "RLog not initialized, automatic init in progress..."
-      );
+      if (!this.config.slient)
+        this.screen.warning(
+          "RLog not initialized, automatic init in progress..."
+        );
       this.init();
     }
 
@@ -495,16 +495,12 @@ class Rlog {
    */
   log(...args) {
     const message = args.join(this.config.joinChar);
-
-    // Check for specific patterns to determine log level
     for (const [key, regex] of Object.entries(this.keywordPatterns)) {
       if (regex.test(message)) {
         this[key](message);
         return;
       }
     }
-
-    // Default to info level
     this.info(message);
   }
 

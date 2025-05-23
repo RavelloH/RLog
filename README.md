@@ -64,8 +64,37 @@ rlog.exit("This is a secure exit method");
 ## 进阶
 rlog致力于成为nodejs端最好用的日志系统。以下是一些进阶使用方式：
 
+### 配置
+有三种方法可修改RLog的配置：  
+
+```javascript
+// Apply configuration when creating an instance
+// 创建实例时应用配置
+const rlog = new Rlog({
+  logFilePath: "./log.txt",
+  timezone: "Asia/Shanghai",
+  autoInit: false,
+});
+
+// Use setConfig to set configuration
+// 使用 setConfig 设置配置
+rlog.config.setConfigGlobal({
+  blockedWordsList: ["world", "[0-9]{9}"],
+});
+rlog.config.setConfig({
+  slient: true
+})
+
+// Set config directly
+// 直接设置配置
+rlog.config.logFilePath = './log.txt'
+rlog.config.timezone = 'Asia/Shanghai'
+```
+其中，`setConfig` 用于实例级配置，`setConfigGlobal` 用于全局默认配置。
+
 ### 自动判断日志级别
-rlog提供了一个特殊的`rlog.log()`，以平替`console.log`。此方法通过关键词匹配，自动确定日志是否属于 `error`、`warning` 或 `success`，否则为 `info`。
+rlog提供了一个特殊的`rlog.log()`，以平替`console.log`。此方法通过关键词匹配，自动确定日志是否属于 `error`、`warning` 或 `success`，否则为 `info`。  
+
 ### 仅在屏幕/文件中输出
 有些时候，日志输出并不一定要做到屏幕显示与文件同步。  
 例如，要显示某个操作的进度(eg:11/100 11%)，就适合只显示在屏幕上而不应被写入文件中。  
@@ -80,7 +109,8 @@ rlog.screen.info("screen only")
 
 ### 强制退出
 日志系统免不了与错误打交道，rlog提供了一个 `rlog.exit(message)`，你可以轻松的通过调用此函数来安全终止程序的运行。调用后，会在屏幕与文件中记录错误信息，然后阻塞进程，直到日志保存完后退出。  
-不推荐使用`process.exit`的方法来关闭进程。由于文件日志写入是异步的，直接这样退出会导致日志无法成功保存，请使用`rlog.exit`来退出。
+不推荐使用`process.exit`的方法来关闭进程。由于文件日志写入是异步的，直接这样退出会导致日志无法成功保存，请使用`rlog.exit`来退出。  
+
 ### 退出钩子
 很多程序在错误的时候会返回点什么统一的提示，例如给个Github Issue地址或者文档地址；或者完成什么配置保存工作或者关闭文件之类的事。显然每个错误的地方都写一条太麻烦了，你可以通过注册一个统一的 `onExit`，在调用 `rlog.exit()`之前做你想要的事。  
 ```javascript
@@ -141,6 +171,9 @@ rlog.info(
 在没有自动初始化的情况下，rlog也会在被首次调用时自行初始化。  
 如果你想手动控制初始化的时机，可以在创建实例后调用`rlog.file.init()`来初始化日志文件。  
 
+### 静默模式
+rlog会自动输出一些信息，例如初始化日志文件的路径。  
+你可以通过设置`silent`为true来启用静默模式，让rlog只输出你手动调用的日志。
 
 ## 接口
 
