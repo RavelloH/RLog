@@ -2,7 +2,17 @@
 
 [![npm version](https://badge.fury.io/js/rlog-js.svg)](https://badge.fury.io/js/rlog-js)
 
-rlog-js是一个用于记录日志、统一日志格式并优化输出的npm包，基于nodejs可写流异步写入log至文件，提供了一系列的接口，用于在控制台和文件中打印日志。同时，还提供了一些工具函数，用于格式化日志信息、加密敏感内容、为不同类型及不同关键词上色等等。
+- 可设置时区
+- 自定义时间格式
+- 类型着色
+- 字符串着色
+- 敏感词加密
+- 可显示进度条
+- 分别设定某个日志输出到屏幕或文件
+- 平替`console.log`，无缝迁移，自动识别日志等级
+- 多行输出优化
+- 自定义连接符
+- rlog.exit()安全退出方法与退出钩子
 
 ![image](https://github.com/user-attachments/assets/bd5e1c3e-b872-4844-9f40-a19587eda847)
 
@@ -119,6 +129,34 @@ rlog.onExit(() => {
 });
 ```
 
+### 字符串着色
+配置`customColorRules`来实现字符串的着色。支持正则表达式。  
+```js
+rlog.setConfig({
+    customColorRules: [
+       {
+          reg: "[a-zA-z]+://[^\\s]*",
+          color: "cyan",
+        },
+    ],
+});
+```
+支持的颜色：  
+![image](https://github.com/user-attachments/assets/d354c492-c6cb-42ea-9357-5bfd26d26589)
+
+
+### 敏感词加密
+配置`blockedWordsList`来实现敏感词的加密，或者说，日志脱敏。支持正则表达式。  
+```js
+rlog.setConfig({
+    blockedWordsList: [
+       "password",
+       "[0-9]{9}"
+    ],
+});
+```
+你也可以在碰见敏感词的时候，就将其push到`rlog.config.blockedWordsList`中。
+
 ### 进度条
 在屏幕上显示一个进度条真是太酷了。你可以简单的调用 `rlog.progress(num, max);`，rlog会自动计算比例，并显示一个进度条。  
 多次调用porgress时，屏幕上只会保留最后一个进度条。
@@ -185,15 +223,15 @@ rlog.methodName();
 
 Rlog是rlog-js的主类，用于创建日志实例，会自动调用File和Screen方法。
 
-| 方法 | 描述 |
-|------|------|
-| `info(message)` | 打印一条信息日志，并将其写入日志文件 |
-| `warning(message)` | 打印一条警告日志，并将其写入日志文件 |
-| `error(message)` | 打印一条错误日志，并将其写入日志文件 |
-| `success(message)` | 打印一条成功日志，并将其写入日志文件 |
-| `exit(message)` | 打印一条退出日志，并将其写入日志文件，然后终止应用程序 |
-| `log(message)` | 自动识别message类型并调用相关函数 |
-| `progress(num,max)` | 打印进度条，num为当前进度，max为总进度 |
+| 方法                | 描述                                                   |
+| ------------------- | ------------------------------------------------------ |
+| `info(message)`     | 打印一条信息日志，并将其写入日志文件                   |
+| `warning(message)`  | 打印一条警告日志，并将其写入日志文件                   |
+| `error(message)`    | 打印一条错误日志，并将其写入日志文件                   |
+| `success(message)`  | 打印一条成功日志，并将其写入日志文件                   |
+| `exit(message)`     | 打印一条退出日志，并将其写入日志文件，然后终止应用程序 |
+| `log(message)`      | 自动识别message类型并调用相关函数                      |
+| `progress(num,max)` | 打印进度条，num为当前进度，max为总进度                 |
 
 ### Config
 
@@ -203,24 +241,24 @@ rlog.config;
 
 Config是一个用于配置rlog-js的类。可设置的项，详见[#配置项](#配置项)。
 
-| 配置项 | 类型 | 默认值 | 描述 |
-|--------|------|--------|------|
-| `enableColorfulOutput` | boolean | true | 是否启用彩色输出 |
-| `logFilePath` | string | undefined | 日志文件的路径，默认表示不将日志写入文件 |
-| `timeFormat` | string | "YYYY-MM-DD HH:mm:ss.SSS" | 时间的格式 |
-| `timezone` | string | "GMT" | 时区 |
-| `blockedWordsList` | Array\<string\> | [] | 需要屏蔽的敏感词列表 |
-| `customColorRules` | Array\<{reg: string, color: string}\> | 预设规则 | 自定义的颜色规则列表 |
-| `screenLength` | number | 自动获取 | 屏幕输出的最大宽度 |
-| `joinChar` | string | " " | 传入多个参数时的连接符 |
-| `silent` | boolean | false | 是否启用静默模式 |
-| `autoInit` | boolean | true | 是否自动初始化日志文件 |
+| 配置项                 | 类型                                  | 默认值                    | 描述                                     |
+| ---------------------- | ------------------------------------- | ------------------------- | ---------------------------------------- |
+| `enableColorfulOutput` | boolean                               | true                      | 是否启用彩色输出                         |
+| `logFilePath`          | string                                | undefined                 | 日志文件的路径，默认表示不将日志写入文件 |
+| `timeFormat`           | string                                | "YYYY-MM-DD HH:mm:ss.SSS" | 时间的格式                               |
+| `timezone`             | string                                | "GMT"                     | 时区                                     |
+| `blockedWordsList`     | Array\<string\>                       | []                        | 需要屏蔽的敏感词列表                     |
+| `customColorRules`     | Array\<{reg: string, color: string}\> | 预设规则                  | 自定义的颜色规则列表                     |
+| `screenLength`         | number                                | 自动获取                  | 屏幕输出的最大宽度                       |
+| `joinChar`             | string                                | " "                       | 传入多个参数时的连接符                   |
+| `silent`               | boolean                               | false                     | 是否启用静默模式                         |
+| `autoInit`             | boolean                               | true                      | 是否自动初始化日志文件                   |
 
 Config类方法：
 
-| 方法 | 描述 |
-|------|------|
-| `setConfig(obj)` | 根据传入的对象更新配置 |
+| 方法                   | 描述                                               |
+| ---------------------- | -------------------------------------------------- |
+| `setConfig(obj)`       | 根据传入的对象更新配置                             |
 | `setConfigGlobal(obj)` | 根据传入的对象更新配置，并将更新后的配置应用到全局 |
 
 ### Toolkit
@@ -231,14 +269,14 @@ rlog.toolkit.methodName();
 
 Toolkit是一个工具类，用于提供一些常用的工具函数。
 
-| 方法 | 描述 |
-|------|------|
-| `checkLogFile(path)` | 检查日志文件是否存在，如果不存在则创建该文件 |
-| `colorizeString(str)` | 根据配置的颜色规则对字符串进行着色 |
-| `formatTime()` | 根据配置的时间格式和时区生成时间字符串 |
-| `encryptPrivacyContent(str)` | 对字符串中的敏感内容进行加密 |
-| `colorizeType(variable)` | 根据变量的类型对其进行着色 |
-| `padLines(str, width)` | 对字符串中除第一行外的每一行进行缩进 |
+| 方法                         | 描述                                         |
+| ---------------------------- | -------------------------------------------- |
+| `checkLogFile(path)`         | 检查日志文件是否存在，如果不存在则创建该文件 |
+| `colorizeString(str)`        | 根据配置的颜色规则对字符串进行着色           |
+| `formatTime()`               | 根据配置的时间格式和时区生成时间字符串       |
+| `encryptPrivacyContent(str)` | 对字符串中的敏感内容进行加密                 |
+| `colorizeType(variable)`     | 根据变量的类型对其进行着色                   |
+| `padLines(str, width)`       | 对字符串中除第一行外的每一行进行缩进         |
 
 ### Screen
 
@@ -248,13 +286,13 @@ rlog.screen.methodName();
 
 Screen是用于在控制台打印日志的类。调用此方法，将仅在屏幕中输出，不会写入至文件。
 
-| 方法 | 描述 |
-|------|------|
-| `info(message, time)` | 打印一条信息日志 |
-| `warning(message, time)` | 打印一条警告日志 |
-| `error(message, time)` | 打印一条错误日志 |
-| `success(message, time)` | 打印一条成功日志 |
-| `exit(message, time)` | 打印一条退出日志，并终止应用程序 |
+| 方法                     | 描述                             |
+| ------------------------ | -------------------------------- |
+| `info(message, time)`    | 打印一条信息日志                 |
+| `warning(message, time)` | 打印一条警告日志                 |
+| `error(message, time)`   | 打印一条错误日志                 |
+| `success(message, time)` | 打印一条成功日志                 |
+| `exit(message, time)`    | 打印一条退出日志，并终止应用程序 |
 
 ### File
 
@@ -264,16 +302,16 @@ rlog.file.methodName();
 
 File是用于将日志写入文件的类。调用此方法，若已设置日志文件路径，将会写入至文件，不会在屏幕输出。
 
-| 方法 | 描述 |
-|------|------|
-| `init()` | 初始化日志文件，如果配置了日志文件路径。不需要手动调用 |
-| `writeLogToStream(text)` | 将日志写入文件流 |
-| `writeLog(text)` | 将日志写入文件 |
-| `info(message, time)` | 写入一条信息日志 |
-| `warning(message, time)` | 写入一条警告日志 |
-| `error(message, time)` | 写入一条错误日志 |
-| `success(message, time)` | 写入一条成功日志 |
-| `exit(message, time)` | 写入一条退出日志，并终止应用程序 |
+| 方法                     | 描述                                                   |
+| ------------------------ | ------------------------------------------------------ |
+| `init()`                 | 初始化日志文件，如果配置了日志文件路径。不需要手动调用 |
+| `writeLogToStream(text)` | 将日志写入文件流                                       |
+| `writeLog(text)`         | 将日志写入文件                                         |
+| `info(message, time)`    | 写入一条信息日志                                       |
+| `warning(message, time)` | 写入一条警告日志                                       |
+| `error(message, time)`   | 写入一条错误日志                                       |
+| `success(message, time)` | 写入一条成功日志                                       |
+| `exit(message, time)`    | 写入一条退出日志，并终止应用程序                       |
 
 
 ## 配置项
