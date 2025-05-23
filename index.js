@@ -216,16 +216,23 @@ class Toolkit {
   }
 
   padLines(str, width) {
-    if (!str) return '';
-    
+    if (!str) return "";
+
     str = String(str);
-    
-    if (!str.includes('\n')) return str;
-    
-    const lines = str.split('\n');
-    const padding = ' '.repeat(width);
-    
-    return lines[0] + '\n' + lines.slice(1).map(line => padding + line).join('\n');
+
+    if (!str.includes("\n")) return str;
+
+    const lines = str.split("\n");
+    const padding = " ".repeat(width);
+
+    return (
+      lines[0] +
+      "\n" +
+      lines
+        .slice(1)
+        .map((line) => padding + line)
+        .join("\n")
+    );
   }
 
   stringify(obj) {
@@ -248,40 +255,42 @@ class Screen {
   _formatMessage(type, color, message, time) {
     const timeheader = `[${time || this.toolkit.formatTime()}]`;
     const colorizedType = chalk[color](type);
-    
+
     const processedMessage = this.toolkit.encryptPrivacyContent(
       this.toolkit.padLines(
-        type === 'SUCC' || type === 'EXIT' ? 
-          chalk[color](message) : 
-          this.toolkit.colorizeType(message),
+        type === "SUCC" || type === "EXIT"
+          ? chalk[color](message)
+          : this.toolkit.colorizeType(message),
         timeheader.length + 7
       )
     );
-    
-    return `${timeheader}[${colorizedType}] ${this.toolkit.colorizeString(processedMessage)}\n`;
+
+    return `${timeheader}[${colorizedType}] ${this.toolkit.colorizeString(
+      processedMessage
+    )}\n`;
   }
   _log(type, color, message, time) {
     process.stdout.write(this._formatMessage(type, color, message, time));
   }
 
   info(message, time) {
-    this._log('INFO', 'cyan', message, time);
+    this._log("INFO", "cyan", message, time);
   }
 
   warning(message, time) {
-    this._log('WARN', 'yellow', message, time);
+    this._log("WARN", "yellow", message, time);
   }
 
   error(message, time) {
-    this._log('ERR!', 'red', message, time);
+    this._log("ERR!", "red", message, time);
   }
 
   success(message, time) {
-    this._log('SUCC', 'green', message, time);
+    this._log("SUCC", "green", message, time);
   }
 
   exit(message, time) {
-    this._log('EXIT', 'red', message, time, true);
+    this._log("EXIT", "red", message, time, true);
   }
 }
 
@@ -290,7 +299,7 @@ class File {
     this.toolkit = toolkit;
     this.config = config;
     this.screen = screen;
-    if (this.config.autoInit)this.init();
+    if (this.config.autoInit) this.init();
   }
   /**@type {Toolkit} */
   toolkit = null;
@@ -308,7 +317,9 @@ class File {
         this.logStream = fs.createWriteStream(this.config.logFilePath, {
           flags: "a",
         });
-        this.screen.info("The log will be written to " + this.config.logFilePath);
+        this.screen.info(
+          "The log will be written to " + this.config.logFilePath
+        );
         this.logStream.on("error", (err) => {
           this.exit("Error writing to log file: " + err);
         });
@@ -322,21 +333,24 @@ class File {
   }
 
   _formatMessage(type, message, time) {
-    return `[${time || this.toolkit.formatTime()}][${type}] ${
-      this.toolkit.encryptPrivacyContent(this.toolkit.stringify(message))
-    }`;
+    return `[${
+      time || this.toolkit.formatTime()
+    }][${type}] ${this.toolkit.encryptPrivacyContent(
+      this.toolkit.stringify(message)
+    )}`;
   }
 
   _log(type, message, time) {
     if (!this.config.logFilePath) return;
-    
+
     if (!this.logStream) {
-      this.screen.warning("RLog not initialized, automatic execution in progress...");
+      this.screen.warning(
+        "RLog not initialized, automatic init in progress..."
+      );
       this.init();
-      if (!this.logStream) return;
     }
-    
-    this.logStream.write(this._formatMessage(type, message, time) + "\n");
+
+    this.writeLogToStream(this._formatMessage(type, message, time) + "\n");
   }
 
   writeLogToStream(text) {
@@ -353,23 +367,23 @@ class File {
   }
 
   info(message, time) {
-    this._log('INFO', message, time);
+    this._log("INFO", message, time);
   }
 
   warning(message, time) {
-    this._log('WARNING', message, time);
+    this._log("WARNING", message, time);
   }
 
   error(message, time) {
-    this._log('ERROR', message, time);
+    this._log("ERROR", message, time);
   }
 
   success(message, time) {
-    this._log('SUCCESS', message, time);
+    this._log("SUCCESS", message, time);
   }
 
   exit(message, time) {
-    this._log('EXIT', message, time);
+    this._log("EXIT", message, time);
   }
 }
 
@@ -390,7 +404,7 @@ class Rlog {
     this.toolkit.screen = this.screen;
     this.file = new File(this.toolkit, this.config, this.screen);
     this.exitListeners = [];
-    
+
     // Pre-compile regex patterns for better performance
     this.keywordPatterns = {
       success: /(success|ok|done|✓)/i,
@@ -405,10 +419,11 @@ class Rlog {
    */
   #genApi(key) {
     return (...args) => {
-      const message = args.length === 1 ? args[0] : args.join(this.config.joinChar);
+      const message =
+        args.length === 1 ? args[0] : args.join(this.config.joinChar);
       const time = this.toolkit.formatTime();
-      this.screen[key](message, time);
       this.file[key](message, time);
+      this.screen[key](message, time);
     };
   }
 
@@ -427,14 +442,22 @@ class Rlog {
     const timeheader = `[${this.toolkit.formatTime()}]`;
     const percent = Math.floor(100 * (num / max)) + "%";
     const paddedPercent = " ".repeat(4 - percent.length) + percent;
-    
+
     const numStr = num.toString();
     const maxStr = max.toString();
-    const state = `${" ".repeat(maxStr.length - numStr.length)}${numStr}/${maxStr}`;
-    
-    const availableLength = process.stdout.columns - 
-      timeheader.length - 6 - 3 - state.length - 1 - paddedPercent.length;
-    
+    const state = `${" ".repeat(
+      maxStr.length - numStr.length
+    )}${numStr}/${maxStr}`;
+
+    const availableLength =
+      process.stdout.columns -
+      timeheader.length -
+      6 -
+      3 -
+      state.length -
+      1 -
+      paddedPercent.length;
+
     if (availableLength <= 1) {
       process.stdout.write(
         `\r${timeheader}[${chalk.magenta("PROG")}] ${paddedPercent} ${state}`
@@ -442,9 +465,9 @@ class Rlog {
     } else {
       const doneLength = Math.floor(availableLength * (num / max));
       process.stdout.write(
-        `\r${timeheader}[${chalk.magenta("PROG")}] [${"|".repeat(doneLength)}${" ".repeat(
-          availableLength - doneLength
-        )}]${paddedPercent} ${state}`
+        `\r${timeheader}[${chalk.magenta("PROG")}] [${"|".repeat(
+          doneLength
+        )}${" ".repeat(availableLength - doneLength)}]${paddedPercent} ${state}`
       );
     }
   }
@@ -456,13 +479,13 @@ class Rlog {
   exit(message) {
     const time = this.toolkit.formatTime();
     this.screen.exit(message, time);
-    const ExitError = new Error('RLog_EXIT_PROCESS');
+    const ExitError = new Error("RLog_EXIT_PROCESS");
     ExitError.isRLogExit = true;
     ExitError.message = message;
     ExitError.time = time;
     global.__RLOG_EXIT_CONTEXT = {
       file: this.file,
-      exitListeners: this.exitListeners
+      exitListeners: this.exitListeners,
     };
     throw ExitError;
   }
@@ -472,7 +495,7 @@ class Rlog {
    */
   log(...args) {
     const message = args.join(this.config.joinChar);
-    
+
     // Check for specific patterns to determine log level
     for (const [key, regex] of Object.entries(this.keywordPatterns)) {
       if (regex.test(message)) {
@@ -480,7 +503,7 @@ class Rlog {
         return;
       }
     }
-    
+
     // Default to info level
     this.info(message);
   }
@@ -490,35 +513,37 @@ class Rlog {
    * @param {Function} callback - Function to call on exit
    */
   onExit(callback) {
-    if (typeof callback === 'function') {
+    if (typeof callback === "function") {
       this.exitListeners.push(callback);
     }
   }
 }
 
-process.on('uncaughtException', async (err) => {
+process.on("uncaughtException", async (err) => {
   if (err.isRLogExit && global.__RLOG_EXIT_CONTEXT) {
     const { file, exitListeners } = global.__RLOG_EXIT_CONTEXT;
-    
+
     try {
       if (file.logStream) {
         file.exit(err.message, err.time);
-        if (typeof file.logStream.flush === 'function') {
+        if (typeof file.logStream.flush === "function") {
           file.logStream.flush();
         }
         await new Promise((resolve, reject) => {
-          file.logStream.on('finish', resolve);
-          file.logStream.on('error', reject);
+          file.logStream.on("finish", resolve);
+          file.logStream.on("error", reject);
           file.logStream.end();
         });
       }
-      await Promise.all(exitListeners.map(listener => {
-        try {
-          return Promise.resolve(listener());
-        } catch (e) {
-          return Promise.resolve();
-        }
-      }));
+      await Promise.all(
+        exitListeners.map((listener) => {
+          try {
+            return Promise.resolve(listener());
+          } catch (e) {
+            return Promise.resolve();
+          }
+        })
+      );
     } catch (e) {
       console.error("Error during log finalization:", e);
     } finally {
@@ -526,7 +551,7 @@ process.on('uncaughtException', async (err) => {
       process.exit(0);
     }
   } else {
-    console.error('Uncaught exception:', err);
+    console.error("Uncaught exception:", err);
     process.exit(1);
   }
 });
