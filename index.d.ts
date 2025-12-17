@@ -43,6 +43,7 @@ declare namespace Rlog {
     toolkit: Toolkit;
     info(message: any, time?: Tostringable): void;
     warning(message: any, time?: Tostringable): void;
+    warn(message: any, time?: Tostringable): void;
     error(message: any, time?: Tostringable): void;
     success(message: any, time?: Tostringable): void;
     exit(message: any, time?: Tostringable): void;
@@ -59,6 +60,8 @@ declare namespace Rlog {
     writeLog(text: string): void;
     info(message: any, time?: Tostringable): void;
     warning(message: any, time?: Tostringable): void;
+    warn(message: any, time?: Tostringable): void;
+    warn(message: any, time?: Tostringable): void;
     error(message: any, time?: Tostringable): void;
     success(message: any, time?: Tostringable): void;
     exit(message: any, time?: Tostringable): void;
@@ -76,6 +79,7 @@ declare class Rlog {
   file: Rlog.File;
   info(...messages: any[]): void;
   warning(...messages: any[]): void;
+  warn(...messages: any[]): void;
   error(...messages: any[]): void;
   success(...messages: any[]): void;
   async exit(message: any): Promise<never>;

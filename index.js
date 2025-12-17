@@ -282,6 +282,10 @@ class Screen {
     this._log("WARN", "yellow", message, time);
   }
 
+  warn(message, time) {
+    this._log("WARN", "yellow", message, time);
+  }
+
   error(message, time) {
     this._log("ERR!", "red", message, time);
   }
@@ -370,7 +374,11 @@ class File {
   }
 
   warning(message, time) {
-    this._log("WARNING", message, time);
+    this._log("WARN", message, time);
+  }
+
+  warn(message, time) {
+    this._log("WARN", message, time);
   }
 
   error(message, time) {
