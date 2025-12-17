@@ -332,11 +332,10 @@ class File {
   }
 
   _formatMessage(type, message, time) {
-    return `[${
-      time || this.toolkit.formatTime()
-    }][${type}] ${this.toolkit.encryptPrivacyContent(
-      this.toolkit.stringify(message)
-    )}`;
+    return `[${time || this.toolkit.formatTime()
+      }][${type}] ${this.toolkit.encryptPrivacyContent(
+        this.toolkit.stringify(message)
+      )}`;
   }
 
   _log(type, message, time) {
@@ -430,6 +429,7 @@ class Rlog {
   // Define logging methods
   info = this.#genApi("info");
   warning = this.#genApi("warning");
+  warn = this.#genApi("warn");
   error = this.#genApi("error");
   success = this.#genApi("success");
 
