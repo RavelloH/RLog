@@ -282,6 +282,10 @@ class Screen {
     this._log("WARN", "yellow", message, time);
   }
 
+  warn(message, time) {
+    this._log("WARN", "yellow", message, time);
+  }
+
   error(message, time) {
     this._log("ERR!", "red", message, time);
   }
@@ -332,11 +336,10 @@ class File {
   }
 
   _formatMessage(type, message, time) {
-    return `[${
-      time || this.toolkit.formatTime()
-    }][${type}] ${this.toolkit.encryptPrivacyContent(
-      this.toolkit.stringify(message)
-    )}`;
+    return `[${time || this.toolkit.formatTime()
+      }][${type}] ${this.toolkit.encryptPrivacyContent(
+        this.toolkit.stringify(message)
+      )}`;
   }
 
   _log(type, message, time) {
@@ -371,7 +374,11 @@ class File {
   }
 
   warning(message, time) {
-    this._log("WARNING", message, time);
+    this._log("WARN", message, time);
+  }
+
+  warn(message, time) {
+    this._log("WARN", message, time);
   }
 
   error(message, time) {
@@ -430,6 +437,7 @@ class Rlog {
   // Define logging methods
   info = this.#genApi("info");
   warning = this.#genApi("warning");
+  warn = this.#genApi("warn");
   error = this.#genApi("error");
   success = this.#genApi("success");
 
