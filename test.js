@@ -1,4 +1,4 @@
-const Rlog = require("./index.js");
+const Rlog = require("./dist/index.js");
 
 // Apply configuration when creating an instance
 // 创建实例时应用配置
@@ -26,7 +26,7 @@ rlog.config.timezone = 'Asia/Shanghai'
 // Create exit event hook
 // 创建退出事件钩子
 rlog.onExit(() => {
-  rlog.warning("rlog.exit() called and event triggered.");
+  rlog.warn("rlog.exit() called and event triggered.");
 });
 
 function test() {
@@ -37,7 +37,7 @@ function test() {
 // 常规调用方式
 rlog.info("This is a info");
 rlog.success("This is a success");
-rlog.warning("This is a warning");
+rlog.warn("This is a warning");
 rlog.error("This is a error");
 
 

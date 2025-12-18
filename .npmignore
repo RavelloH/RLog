@@ -1,0 +1,18 @@
+# Source files
+src/
+tsconfig.json
+
+# Test files
+test.js
+*.test.ts
+*.test.js
+
+# Development files
+.git
+.gitignore
+*.log
+log.txt
+
+# Old JS files (we only ship dist/)
+index.js
+index.d.ts
