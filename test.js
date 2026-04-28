@@ -1,141 +1,262 @@
+const assert = require("assert");
+const fs = require("fs");
+const os = require("os");
+const path = require("path");
+const { formatWithOptions, inspect } = require("util");
 const Rlog = require("./dist/index.js");
 
-// Apply configuration when creating an instance
-// 创建实例时应用配置
-const rlog = new Rlog({
-  logFilePath: "./log.txt",
-  timezone: "Asia/Shanghai",
-  autoInit: false,
-});
+const INSPECT_OPTIONS = { colors: false };
+const ANSI_RE = /\x1B\[[0-?]*[ -/]*[@-~]/g;
 
-// Use setConfig to set configuration
-// 使用 setConfig 设置配置
-rlog.config.setConfigGlobal({
-  blockedWordsList: ["world", "[0-9]{9}"],
-});
-rlog.config.setConfig({
-  silent: false,
-})
-
-// Set config directly
-// 直接设置配置
-rlog.config.logFilePath = './log.txt'
-rlog.config.timezone = 'Asia/Shanghai'
-
-
-// Create exit event hook
-// 创建退出事件钩子
-rlog.onExit(() => {
-  rlog.warn("rlog.exit() called and event triggered.");
-});
-
-function test() {
-  let a = null;
+function expectedMessage(...args) {
+  return formatWithOptions(INSPECT_OPTIONS, ...args);
 }
 
-// Regular call method
-// 常规调用方式
-rlog.info("This is a info");
-rlog.success("This is a success");
-rlog.warn("This is a warning");
-rlog.error("This is a error");
+function stripAnsi(value) {
+  return value.replace(ANSI_RE, "");
+}
 
+function createRlog(config = {}) {
+  return new Rlog({
+    autoInit: false,
+    silent: true,
+    timeFormat: "timestamp",
+    customColorRules: [],
+    ...config,
+  });
+}
 
-// Test colorize type
-// 测试类型着色
-rlog.info("Testing colorize type:");
-rlog.info(123);
-rlog.info(true);
-rlog.info({
-  time: Date.now(),
-  text: "example",
-});
-rlog.info([1, 2, "5"]);
-rlog.info(test);
+function captureStdout(fn) {
+  const originalWrite = process.stdout.write;
+  let output = "";
 
-// Test blocked words
-// 测试屏蔽词
-rlog.info("Testing lock words:");
-rlog.info(`hello world !! 123456789`);
+  process.stdout.write = function writeCapture(chunk, encoding, callback) {
+    output += Buffer.isBuffer(chunk) ? chunk.toString() : String(chunk);
 
-// Test string colorize
-// 测试字符串着色
-rlog.info("");
-rlog.info("Testing colorize string:");
-rlog.info("Welcome to https://github.com/RavelloH/RLog");
-rlog.info("This is a ip: 123.45.67.89");
-rlog.info("This is a date: 1970-12-12");
-rlog.info("Boolean false true");
+    if (typeof encoding === "function") {
+      encoding();
+    }
+    if (typeof callback === "function") {
+      callback();
+    }
 
-// Test multi line output
-// 测试多行输出
-rlog.info("");
-rlog.info("Test multi line output");
-rlog.info(`1\n22\n333\n4444`);
+    return true;
+  };
 
-rlog.info("");
-rlog.info("Test automatic recognition");
-rlog.log("This is a success message.");
-rlog.log("This is a warning message.");
-rlog.log("This is an error message.");
-rlog.log("This is an info message.");
+  try {
+    fn();
+  } finally {
+    process.stdout.write = originalWrite;
+  }
 
-// Test time zone
-// 测试时区
-rlog.info("");
-rlog.info("Test Time Zone Conversion");
-rlog.config.timezone = "Pacific/Port_Moresby";
-rlog.info("Pacific/Port_Moresby");
-rlog.config.timezone = "America/Chicago";
-rlog.info("America/Chicago");
-rlog.config.timezone = "Asia/Shanghai";
-rlog.info("Asia/Shanghai");
+  return output;
+}
 
-// Test time format
-// 测试时间格式
-rlog.info("");
-rlog.info("Test Time Format");
-rlog.config.timeFormat = "UTC";
-rlog.info("UTC");
-rlog.config.timeFormat = "timestamp";
-rlog.info("timestamp");
-rlog.config.timeFormat = "ISO";
-rlog.info("ISO");
-rlog.config.timeFormat = "YYYY-MM-DD HH:mm:ss.SSS";
-rlog.info("YYYY-MM-DD HH:mm:ss.SSS");
+function parseRlogOutput(output) {
+  const clean = stripAnsi(output);
+  const match = /^\[([^\]]*)\]\[([^\]]+)\] ([\s\S]*)\n$/.exec(clean);
 
-// Test multiple parameters
-// 测试多参数传入
-rlog.info("");
-rlog.log("Hello world!", "This is a message", 123, true);
-rlog.info("Hello world!", "This is a message", 123, true);
+  assert.ok(match, `Unexpected Rlog output shape:\n${clean}`);
 
-// Test custom joinChar
-// 测试自定义连接符 
-rlog.info("");
-rlog.info("Test joinChar");
-rlog.config.joinChar = "\n";
-rlog.log("Line 1", "Line2");
+  const [, time, type, paddedMessage] = match;
+  const padding = " ".repeat(`[${time}][${type}] `.length);
+  const message = paddedMessage
+    .split("\n")
+    .map((line, index) => {
+      if (index === 0) return line;
+      return line.startsWith(padding) ? line.slice(padding.length) : line;
+    })
+    .join("\n");
 
-// Test progress bar
-// 测试进度条
-rlog.progress(10, 100);
-rlog.progress(50, 100);
-rlog.progress(100, 100);
+  return { clean, message, padding, time, type };
+}
 
-// Test exit method
-// 测试exit方式
-rlog.info("Test security exit");
-rlog.exit("Force to exit after saving logs");
-console.log("This will not be printed");
+function assertRlogCall(rlog, method, args, expectedType, label) {
+  const output = captureStdout(() => {
+    rlog[method](...args);
+  });
+  const parsed = parseRlogOutput(output);
 
-// 性能测试
-// Performance test
-// console.time()
-// for (i=0;i<=100000;i++) {
-//     rlog.info(i)
-//     if (i === 10000) {
-//         rlog.exit("Force to exit after saving logs");
-//     }
-// }
-// console.timeEnd();
+  assert.strictEqual(parsed.type, expectedType, `${label}: log level`);
+  assert.strictEqual(
+    parsed.message,
+    expectedMessage(...args),
+    `${label}: console-compatible message`
+  );
+
+  return parsed;
+}
+
+function assertRlogMessage(rlog, method, args, expectedType, message, label) {
+  const output = captureStdout(() => {
+    rlog[method](...args);
+  });
+  const parsed = parseRlogOutput(output);
+
+  assert.strictEqual(parsed.type, expectedType, `${label}: log level`);
+  assert.strictEqual(parsed.message, message, `${label}: message`);
+
+  return parsed;
+}
+
+function closeLogStream(rlog) {
+  const stream = rlog.file.logStream;
+  if (!stream) return Promise.resolve();
+
+  return new Promise((resolve, reject) => {
+    stream.once("finish", resolve);
+    stream.once("error", reject);
+    stream.end();
+  });
+}
+
+async function run() {
+  const rlog = createRlog();
+  const circular = { name: "root" };
+  circular.self = circular;
+  const customInspect = {
+    [inspect.custom]() {
+      return "custom-inspect-value";
+    },
+  };
+  const sampleFunction = function sampleFunction(value) {
+    return value;
+  };
+
+  const compatibilityCases = [
+    { label: "empty args", args: [] },
+    { label: "plain string", args: ["plain text"] },
+    { label: "mixed values", args: ["a", { b: 1 }, 1] },
+    {
+      label: "format placeholders",
+      args: ["user=%s count=%d ratio=%f %%", "Ravello", 7, 3.5],
+    },
+    {
+      label: "inspect placeholders",
+      args: ["int=%i object=%o compact=%O", "42.9", { deep: { value: 1 } }, { a: 1 }],
+    },
+    { label: "json placeholder", args: ["json=%j", circular] },
+    { label: "object", args: [{ nested: { b: 1 }, list: [1, 2] }] },
+    { label: "array", args: [[1, "x", true]] },
+    { label: "error", args: [new Error("boom")] },
+    { label: "date", args: [new Date("2020-01-02T03:04:05.000Z")] },
+    { label: "map", args: [new Map([["a", 1]])] },
+    { label: "set", args: [new Set([1, 2])] },
+    { label: "bigint", args: [123n] },
+    { label: "symbol", args: [Symbol("x")] },
+    { label: "null", args: [null] },
+    { label: "undefined", args: [undefined] },
+    { label: "function", args: [sampleFunction] },
+    { label: "circular object", args: [circular] },
+    { label: "custom inspect", args: [customInspect] },
+  ];
+
+  for (const item of compatibilityCases) {
+    assertRlogCall(rlog, "info", item.args, "INFO", item.label);
+  }
+
+  assertRlogCall(rlog, "warn", ["warn method", { code: 1 }], "WARN", "warn");
+  assertRlogCall(
+    rlog,
+    "warning",
+    ["warning method", { code: 2 }],
+    "WARN",
+    "warning"
+  );
+  assertRlogCall(rlog, "error", ["error method", { code: 3 }], "ERR!", "error");
+  assertRlogCall(
+    rlog,
+    "success",
+    ["success method", { code: 4 }],
+    "SUCC",
+    "success"
+  );
+  assertRlogCall(rlog, "log", ["neutral", { b: 1 }, 1], "INFO", "log info");
+  assertRlogCall(
+    rlog,
+    "log",
+    ["operation success", { code: 200 }],
+    "SUCC",
+    "log success auto-detect"
+  );
+  assertRlogCall(
+    rlog,
+    "log",
+    ["warning: disk space low", { free: "1GB" }],
+    "WARN",
+    "log warning auto-detect"
+  );
+  assertRlogCall(
+    rlog,
+    "log",
+    ["fatal error", { code: 500 }],
+    "ERR!",
+    "log error auto-detect"
+  );
+
+  const multiline = assertRlogCall(
+    rlog,
+    "info",
+    ["line1\nline2\nline3"],
+    "INFO",
+    "multiline padding"
+  );
+  assert.ok(
+    multiline.clean.includes(`\n${multiline.padding}line2`),
+    "multiline output should indent second line"
+  );
+
+  const privacyRlog = createRlog({
+    blockedWordsList: ["secret", "[0-9]{4}"],
+  });
+  assertRlogMessage(
+    privacyRlog,
+    "info",
+    ["token=%s code=%d", "secret", 1234],
+    "INFO",
+    "token=****** code=****",
+    "privacy filtering"
+  );
+
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "rlog-test-"));
+  const logFilePath = path.join(tempDir, "rlog.log");
+
+  try {
+    const fileRlog = createRlog({
+      autoInit: true,
+      logFilePath,
+    });
+
+    assertRlogCall(
+      fileRlog,
+      "info",
+      ["file", { b: 1 }, 1],
+      "INFO",
+      "file screen output"
+    );
+    await closeLogStream(fileRlog);
+
+    const fileContent = fs.readFileSync(logFilePath, "utf8");
+    assert.match(
+      fileContent,
+      /\[[^\]]+\]\[INFO\] file \{ b: 1 \} 1\r?\n/,
+      "file output should contain console-compatible message"
+    );
+    assert.doesNotMatch(
+      fileContent,
+      ANSI_RE,
+      "file output should not contain ANSI color codes"
+    );
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
+run()
+  .then(() => {
+    console.log("All RLog compatibility tests passed.");
+  })
+  .catch((err) => {
+    console.error(err);
+    process.exit(1);
+  });

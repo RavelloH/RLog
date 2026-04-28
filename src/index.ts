@@ -2,9 +2,16 @@ import chalk from "chalk";
 import * as fs from "fs-extra";
 import moment from "moment";
 import "moment-timezone";
+import { formatWithOptions } from "util";
 
 /** Types that can be converted to string for logging */
 type Tostringable = string | null | boolean | undefined | number | bigint;
+
+/** Top-level Rlog methods that write to both screen and file */
+type RlogApiKey = 'info' | 'warning' | 'warn' | 'error' | 'success';
+
+/** Top-level Rlog methods available for automatic level detection */
+type AutoLogKey = 'success' | 'warning' | 'error';
 
 /** Available chalk colors for string colorization */
 type ChalkColor = 'red' | 'green' | 'yellow' | 'blue' | 'magenta' | 'cyan' | 'gray';
@@ -31,8 +38,6 @@ interface ConfigOptions {
   timeFormat?: string;
   /** Timezone for time formatting (e.g., 'Asia/Shanghai') */
   timezone?: string;
-  /** Character used to join multiple log arguments */
-  joinChar?: string;
   /** List of patterns (regex or string) to mask in logs */
   blockedWordsList?: string[];
   /** Maximum width for screen output */
@@ -54,7 +59,6 @@ class Config {
   logFilePath?: string = undefined;
   timeFormat: string = "YYYY-MM-DD HH:mm:ss.SSS";
   timezone?: string = undefined;
-  joinChar: string = " ";
   blockedWordsList: string[] = [];
   screenLength: number = process.stdout.columns || 80;
   autoInit: boolean = true;
@@ -263,6 +267,15 @@ class Toolkit {
     }
 
     return now.format(timeFormat);
+  }
+
+  /**
+   * Format logging arguments with the same argument semantics as Node.js console.log.
+   * @param args - Values passed to a top-level Rlog API
+   * @returns Console-compatible formatted message
+   */
+  formatConsoleArgs(args: any[]): string {
+    return formatWithOptions({ colors: false }, ...args);
   }
 
   /**
@@ -679,7 +692,7 @@ class Rlog {
   /** Exit event listeners */
   exitListeners: (() => void | Promise<void>)[];
   /** Keyword patterns for auto log level detection */
-  private keywordPatterns: Record<string, RegExp>;
+  private keywordPatterns: { key: AutoLogKey; regex: RegExp }[];
 
   /**
    * Create a new Rlog instance
@@ -694,24 +707,30 @@ class Rlog {
     this.file = new File(this.toolkit, this.config, this.screen);
     this.exitListeners = [];
 
-    this.keywordPatterns = {
-      success: /(success|ok|done|✓)/i,
-      warning: /(warn|but|notice|see|problem)/i,
-      error: /(error|fail|mistake|problem|fatal)/i,
-    };
+    this.keywordPatterns = [
+      { key: "success", regex: /(success|ok|done|✓)/i },
+      { key: "warning", regex: /(warn|but|notice|see|problem)/i },
+      { key: "error", regex: /(error|fail|mistake|problem|fatal)/i },
+    ];
+  }
+
+  /**
+   * Write an already formatted message through the selected top-level API.
+   * @private
+   */
+  #writeFormatted(key: RlogApiKey, message: string): void {
+    const time = this.toolkit.formatTime();
+    this.file[key](message, time);
+    this.screen[key](message, time);
   }
 
   /**
    * Generate unified logging API methods
    * @private
    */
-  #genApi(key: 'info' | 'warning' | 'warn' | 'error' | 'success') {
+  #genApi(key: RlogApiKey) {
     return (...args: any[]) => {
-      const message =
-        args.length === 1 ? args[0] : args.join(this.config.joinChar);
-      const time = this.toolkit.formatTime();
-      this.file[key](message, time);
-      this.screen[key](message, time);
+      this.#writeFormatted(key, this.toolkit.formatConsoleArgs(args));
     };
   }
 
@@ -835,14 +854,14 @@ class Rlog {
    * ```
    */
   log(...args: any[]): void {
-    const message = args.join(this.config.joinChar);
-    for (const [key, regex] of Object.entries(this.keywordPatterns)) {
+    const message = this.toolkit.formatConsoleArgs(args);
+    for (const { key, regex } of this.keywordPatterns) {
       if (regex.test(message)) {
-        (this as any)[key](message);
+        this.#writeFormatted(key, message);
         return;
       }
     }
-    this.info(message);
+    this.#writeFormatted("info", message);
   }
 
   /**

@@ -16,7 +16,6 @@
 - 分别设定某个日志输出到屏幕或文件
 - 平替`console.log`，无缝迁移，自动识别日志等级
 - 多行输出优化
-- 自定义连接符
 - rlog.exit()安全退出方法与退出钩子
 
 ![image](https://github.com/user-attachments/assets/bd5e1c3e-b872-4844-9f40-a19587eda847)
@@ -67,7 +66,7 @@ rlog.warn("This is a warning log");
 接下来就可以使用各种接口来输出日志了。
 如果你的项目之前一直是用console.log来输出日志，那么直接替换所有`console`为`rlog`即可一步到位。
 
-具体来说，`./test.js`中有大量对rlog的调用示例，以供查看。
+具体来说，`./demo.js`中有大量对rlog的调用示例，以供查看；`./test.js`提供自动化回归测试。
 
 一个最简单的使用示例如下：
 
@@ -129,7 +128,12 @@ rlog.config.timezone = 'Asia/Shanghai'
 
 ### 自动判断日志级别
 
-rlog提供了一个特殊的`rlog.log()`，以平替`console.log`。此方法通过关键词匹配，自动确定日志是否属于 `error`、`warning` 或 `success`，否则为 `info`。  
+rlog提供了一个特殊的`rlog.log()`，以平替`console.log`。它使用 Node.js 原生的 `console.log` 参数格式化语义，支持多参数、占位符和对象输出；随后通过关键词匹配，自动确定日志是否属于 `error`、`warning` 或 `success`，否则为 `info`。
+
+```javascript
+rlog.log("a", { b: 1 }, 1);
+rlog.log("user=%s score=%d", "Ravello", 100);
+```
 
 ### 仅在屏幕/文件中输出
 
@@ -222,24 +226,18 @@ let a = setInterval(()=>{
 
 进度条只会在screen中输出，随便调用，不会污染日志。
 
-### 指定joinChar  
+### 多行输出
 
-有的时候你可能想让程序整齐一点，输出多行内容的时候，代码也能赏心悦目，与输出的格式相同：
+rlog会自动对多行内容进行缩进，保持第二行及后续行与日志正文对齐：
 
 ```javascript
-// bad
 rlog.info(`line1
 line2`);
 
-// bad
-rlog.info("line1\nline2")
-
-// good
-rlog.config.joinChar = "\n"
-rlog.info(
-  "line1",
-  "line2"
-)
+rlog.info("payload", {
+  line1: "hello",
+  line2: "world",
+});
 ```
 
 ### 自动初始化
@@ -292,7 +290,6 @@ Config是一个用于配置rlog-js的类。可设置的项，详见[#配置项](
 | `blockedWordsList`     | Array\<string\>                       | []                        | 需要屏蔽的敏感词列表                     |
 | `customColorRules`     | Array\<{reg: string, color: string}\> | 预设规则                  | 自定义的颜色规则列表                     |
 | `screenLength`         | number                                | 自动获取                  | 屏幕输出的最大宽度                       |
-| `joinChar`             | string                                | " "                       | 传入多个参数时的连接符                   |
 | `silent`               | boolean                               | false                     | 是否启用静默模式                         |
 | `autoInit`             | boolean                               | true                      | 是否自动初始化日志文件                   |
 
@@ -316,6 +313,7 @@ Toolkit是一个工具类，用于提供一些常用的工具函数。
 | `checkLogFile(path)`         | 检查日志文件是否存在，如果不存在则创建该文件 |
 | `colorizeString(str)`        | 根据配置的颜色规则对字符串进行着色           |
 | `formatTime()`               | 根据配置的时间格式和时区生成时间字符串       |
+| `formatConsoleArgs(args)`    | 按 Node.js `console.log` 语义格式化参数      |
 | `encryptPrivacyContent(str)` | 对字符串中的敏感内容进行加密                 |
 | `colorizeType(variable)`     | 根据变量的类型对其进行着色                   |
 | `padLines(str, width)`       | 对字符串中除第一行外的每一行进行缩进         |
@@ -367,7 +365,6 @@ rlog-js还提供了一些配置选项，可以在创建Rlog实例时进行配置
     logFilePath: undefined,     // 日志文件路径，如果不设置则不会输出到文件
     timeFormat: "YYYY-MM-DD HH:mm:ss.SSS", // 时间格式
     timezone: "GMT",      // 时区
-    joinChar: " ",        // 指定传入多参数时应如何连接
     blockedWordsList: [], // 需要屏蔽的词汇列表
     autoInit: true,       // 是否自动初始化日志文件
     customColorRules: [   // 自定义颜色规则

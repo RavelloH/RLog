@@ -10,6 +10,7 @@
   "scripts": {
     "build": "tsc",
     "test": "npm run build && node ./test.js",
+    "demo": "npm run build && node ./demo.js",
     "prepublishOnly": "npm run build"
   },
   "repository": {
