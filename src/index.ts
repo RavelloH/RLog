@@ -55,6 +55,9 @@ interface ConfigOptions {
  * Manages all logging behavior settings
  */
 class Config {
+  private static globalDefaults: Partial<Config> = {};
+  private static instances: Set<Config> = new Set();
+
   enableColorfulOutput: boolean = true;
   logFilePath?: string = undefined;
   timeFormat: string = "YYYY-MM-DD HH:mm:ss.SSS";
@@ -99,6 +102,11 @@ class Config {
   ];
 
   constructor() {
+    Config.instances.add(this);
+    this.setConfig(Config.globalDefaults);
+  }
+
+  private applyRuntimeSideEffects(): void {
     if (!this.enableColorfulOutput) {
       chalk.level = 0;
     }
@@ -117,16 +125,21 @@ class Config {
    */
   setConfig(obj?: Partial<Config>): void {
     if (!obj) return;
+    let changed = false;
+
     for (const key in obj) {
       if (obj.hasOwnProperty(key)) {
         (this as any)[key] = obj[key as keyof Config];
+        changed = true;
       }
     }
+
+    if (changed) this.applyRuntimeSideEffects();
   }
 
   /**
    * Update configuration globally for all instances
-   * Changes the default prototype values
+   * Changes active instances and defaults for future instances in this process
    * @param obj - Partial configuration object
    * @example
    * ```typescript
@@ -137,12 +150,16 @@ class Config {
    */
   setConfigGlobal(obj?: Partial<Config>): void {
     if (!obj) return;
+
     for (const key in obj) {
       if (obj.hasOwnProperty(key)) {
         const value = obj[key as keyof Config];
-        (this as any)[key] = value;
-        (Config.prototype as any)[key] = value;
+        (Config.globalDefaults as any)[key] = value;
       }
+    }
+
+    for (const instance of Config.instances) {
+      instance.setConfig(obj);
     }
   }
 }
@@ -154,6 +171,7 @@ class Toolkit {
   config: Config;
   screen!: Screen;
   private _regexCache?: RegExp[];
+  private _regexCacheKey?: string;
 
   constructor(config: Config) {
     this.config = config;
@@ -294,7 +312,9 @@ class Toolkit {
     if (typeof str !== "string" || !this.config.blockedWordsList?.length) {
       return str;
     }
-    if (!this._regexCache) {
+    const regexCacheKey = this.config.blockedWordsList.join("\u0000");
+
+    if (!this._regexCache || this._regexCacheKey !== regexCacheKey) {
       this._regexCache = this.config.blockedWordsList.map((pattern) => {
         try {
           return new RegExp(pattern, "g");
@@ -305,6 +325,7 @@ class Toolkit {
           );
         }
       });
+      this._regexCacheKey = regexCacheKey;
     }
     return this._regexCache.reduce((result, regex) => {
       return result.replace(regex, (match) => {

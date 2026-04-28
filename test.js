@@ -151,6 +151,44 @@ function assertSuccessfulExit(result, label) {
   assert.strictEqual(result.stderr, "", `${label}: no stderr output`);
 }
 
+function runScriptTree(files, entryFile) {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "rlog-tree-test-"));
+
+  try {
+    for (const [name, content] of Object.entries(files)) {
+      fs.writeFileSync(path.join(tempDir, name), content);
+    }
+
+    return spawnSync(process.execPath, [path.join(tempDir, entryFile)], {
+      cwd: tempDir,
+      env: {
+        ...process.env,
+        RLOG_DIST_ENTRY: path.join(__dirname, "dist", "index.js"),
+      },
+      encoding: "utf8",
+      maxBuffer: 1024 * 1024 * 20,
+    });
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
+function parseRlogLines(output) {
+  return stripAnsi(output)
+    .trimEnd()
+    .split(/\r?\n/)
+    .filter(Boolean)
+    .map((line) => {
+      const match = /^\[([^\]]*)\]\[([^\]]+)\] (.*)$/.exec(line);
+      assert.ok(match, `Unexpected Rlog line shape:\n${line}`);
+      return {
+        time: match[1],
+        type: match[2],
+        message: match[3],
+      };
+    });
+}
+
 async function run() {
   const rlog = createRlog();
   const circular = { name: "root" };
@@ -291,6 +329,160 @@ async function run() {
   } finally {
     fs.rmSync(tempDir, { recursive: true, force: true });
   }
+
+  const sameProcessTree = runScriptTree(
+    {
+      "child.js": `
+        const Rlog = require(process.env.RLOG_DIST_ENTRY);
+
+        const childRlog = new Rlog({
+          autoInit: false,
+          silent: true,
+          timeFormat: "YYYY-MM-DD HH:mm:ss.SSS",
+          blockedWordsList: ["child-secret"],
+          customColorRules: [],
+        });
+
+        exports.runAfterParentGlobal = function runAfterParentGlobal() {
+          childRlog.info("same child existing global-secret child-secret");
+        };
+
+        exports.runNewAfterParentGlobal = function runNewAfterParentGlobal() {
+          const newChildRlog = new Rlog({
+            autoInit: false,
+            silent: true,
+            customColorRules: [],
+          });
+          newChildRlog.info("same child new global-secret child-secret");
+        };
+
+        exports.runAfterLocalOverride = function runAfterLocalOverride() {
+          childRlog.config.setConfig({
+            blockedWordsList: ["child-secret"],
+          });
+          childRlog.info("same child local global-secret child-secret");
+        };
+      `,
+      "parent.js": `
+        const Rlog = require(process.env.RLOG_DIST_ENTRY);
+        const child = require("./child.js");
+
+        const parentRlog = new Rlog({
+          autoInit: false,
+          silent: true,
+          blockedWordsList: ["parent-secret"],
+          customColorRules: [],
+        });
+
+        parentRlog.config.setConfigGlobal({
+          timeFormat: "timestamp",
+          blockedWordsList: ["global-secret"],
+          customColorRules: [],
+        });
+
+        parentRlog.info("same parent global-secret parent-secret");
+        child.runAfterParentGlobal();
+        child.runNewAfterParentGlobal();
+        child.runAfterLocalOverride();
+      `,
+    },
+    "parent.js"
+  );
+  assert.strictEqual(sameProcessTree.status, 0, "same-process tree exits");
+  assert.strictEqual(sameProcessTree.stderr, "", "same-process tree stderr");
+
+  const sameProcessLines = parseRlogLines(sameProcessTree.stdout);
+  assert.strictEqual(
+    sameProcessLines.length,
+    4,
+    "same-process tree should emit four log lines"
+  );
+  assert.ok(
+    !sameProcessLines[0].message.includes("global-secret") &&
+      sameProcessLines[0].message.includes("parent-secret"),
+    "same-process tree: global config overrides existing parent instance"
+  );
+  assert.ok(
+    !sameProcessLines[1].message.includes("global-secret") &&
+      sameProcessLines[1].message.includes("child-secret"),
+    "same-process tree: global config overrides existing child instance"
+  );
+  assert.ok(
+    !sameProcessLines[2].message.includes("global-secret") &&
+      sameProcessLines[2].message.includes("child-secret"),
+    "same-process tree: child instance created after global config inherits it"
+  );
+  assert.ok(
+    sameProcessLines[3].message.includes("global-secret") &&
+      !sameProcessLines[3].message.includes("child-secret"),
+    "same-process tree: local child config can override global defaults after the global call"
+  );
+
+  const spawnedProcessTree = runScriptTree(
+    {
+      "spawn-child.js": `
+        const Rlog = require(process.env.RLOG_DIST_ENTRY);
+        const childRlog = new Rlog({
+          autoInit: false,
+          silent: true,
+          timeFormat: "timestamp",
+          customColorRules: [],
+        });
+        childRlog.info("spawn child global-secret child-secret");
+      `,
+      "parent.js": `
+        const path = require("path");
+        const { spawnSync } = require("child_process");
+        const Rlog = require(process.env.RLOG_DIST_ENTRY);
+
+        const parentRlog = new Rlog({
+          autoInit: false,
+          silent: true,
+          customColorRules: [],
+        });
+        parentRlog.config.setConfigGlobal({
+          timeFormat: "timestamp",
+          blockedWordsList: ["global-secret"],
+          customColorRules: [],
+        });
+
+        parentRlog.info("spawn parent global-secret child-secret");
+
+        const childResult = spawnSync(process.execPath, [
+          path.join(__dirname, "spawn-child.js"),
+        ], {
+          env: process.env,
+          encoding: "utf8",
+        });
+
+        process.stdout.write(childResult.stdout);
+        if (childResult.status !== 0) {
+          process.stderr.write(childResult.stderr);
+          process.exit(childResult.status || 1);
+        }
+      `,
+    },
+    "parent.js"
+  );
+  assert.strictEqual(spawnedProcessTree.status, 0, "spawned tree exits");
+  assert.strictEqual(spawnedProcessTree.stderr, "", "spawned tree stderr");
+
+  const spawnedLines = parseRlogLines(spawnedProcessTree.stdout);
+  assert.strictEqual(
+    spawnedLines.length,
+    2,
+    "spawned tree should emit two log lines"
+  );
+  assert.ok(
+    !spawnedLines[0].message.includes("global-secret") &&
+      spawnedLines[0].message.includes("child-secret"),
+    "spawned tree: parent process uses its global config"
+  );
+  assert.ok(
+    spawnedLines[1].message.includes("global-secret") &&
+      spawnedLines[1].message.includes("child-secret"),
+    "spawned tree: child process does not inherit parent process global config"
+  );
 
   const basicExit = runExitChild(`
     const rlog = new Rlog({

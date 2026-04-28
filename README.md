@@ -124,7 +124,7 @@ rlog.config.logFilePath = './log.txt'
 rlog.config.timezone = 'Asia/Shanghai'
 ```
 
-其中，`setConfig` 用于实例级配置，`setConfigGlobal` 用于全局默认配置。
+其中，`setConfig` 用于实例级配置，`setConfigGlobal` 用于当前 Node.js 进程内的全局配置。`setConfigGlobal` 会覆盖当前进程中已经创建的 Rlog 实例，并作为后续实例的默认配置；子进程是独立 Node.js 进程，不会自动继承父进程中的全局配置。
 
 ### 自动判断日志级别
 
