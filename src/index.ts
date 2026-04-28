@@ -889,17 +889,7 @@ process.on("uncaughtException", async (err: Error) => {
     const { file, exitListeners } = (globalThis as any).__RLOG_EXIT_CONTEXT;
 
     try {
-      if (file.logStream) {
-        file.exit(rlogErr.message, rlogErr.time);
-        if (typeof (file.logStream as any).flush === "function") {
-          (file.logStream as any).flush();
-        }
-        await new Promise<void>((resolve, reject) => {
-          file.logStream!.on("finish", resolve);
-          file.logStream!.on("error", reject);
-          file.logStream!.end();
-        });
-      }
+      file.exit(rlogErr.message, rlogErr.time);
       await Promise.all(
         exitListeners.map((listener: () => void | Promise<void>) => {
           try {
@@ -909,6 +899,17 @@ process.on("uncaughtException", async (err: Error) => {
           }
         })
       );
+
+      if (file.logStream) {
+        if (typeof (file.logStream as any).flush === "function") {
+          (file.logStream as any).flush();
+        }
+        await new Promise<void>((resolve, reject) => {
+          file.logStream!.once("finish", resolve);
+          file.logStream!.once("error", reject);
+          file.logStream!.end();
+        });
+      }
     } catch (e) {
       console.error("Error during log finalization:", e);
     } finally {
