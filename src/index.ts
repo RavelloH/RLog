@@ -20,6 +20,12 @@ type LogTemplatePart =
   | { type: "level" }
   | { type: "time"; format?: string };
 
+/** Precompiled custom color rule for hot log formatting paths */
+type CompiledColorRule = {
+  regex: RegExp;
+  colorize: (value: string) => string;
+};
+
 /** Available chalk colors for string colorization */
 type ChalkColor = 'red' | 'green' | 'yellow' | 'blue' | 'magenta' | 'cyan' | 'gray';
 
@@ -184,7 +190,12 @@ class Toolkit {
   private _regexCacheKey?: string;
   private _logTemplateCache?: LogTemplatePart[];
   private _logTemplateCacheKey?: string;
+  private _colorRuleCache?: CompiledColorRule[];
+  private _colorRuleCacheKey?: string;
+  private _timeCacheKey?: string;
+  private _timeCacheValue?: string | number;
   private static readonly ansiRegex = /\x1B\[[0-?]*[ -/]*[@-~]/g;
+  private static readonly ansiColorSplitRegex = /(\u001b\[\d+m)/g;
 
   constructor(config: Config) {
     this.config = config;
@@ -213,10 +224,40 @@ class Toolkit {
    * @param str - String to colorize
    * @returns Colorized string with ANSI codes
    */
+  private getCompiledColorRules(): CompiledColorRule[] {
+    const rules = this.config.customColorRules;
+    if (!rules?.length) return [];
+
+    const cacheKey = rules
+      .map(({ reg, color }) => `${color}\u0000${reg}`)
+      .join("\u0001");
+
+    if (this._colorRuleCache && this._colorRuleCacheKey === cacheKey) {
+      return this._colorRuleCache;
+    }
+
+    this._colorRuleCache = rules
+      .map(({ reg, color }) => {
+        const chalkFn = chalk[color];
+        if (typeof chalkFn !== "function") return null;
+
+        return {
+          regex: new RegExp(reg, "g"),
+          colorize: chalkFn as (value: string) => string,
+        };
+      })
+      .filter((rule): rule is CompiledColorRule => rule !== null);
+    this._colorRuleCacheKey = cacheKey;
+
+    return this._colorRuleCache;
+  }
+
   colorizeString(str: string): string {
     if (!str || typeof str !== "string") return str;
-    const ansiColorRegex = /(\u001b\[\d+m)/g;
-    const parts = str.split(ansiColorRegex);
+    const colorRules = this.getCompiledColorRules();
+    if (!colorRules.length) return str;
+
+    const parts = str.split(Toolkit.ansiColorSplitRegex);
 
     let activeColorStack: string[] = [];
     const result: string[] = [];
@@ -236,16 +277,13 @@ class Toolkit {
 
       const currentColorState = [...activeColorStack];
       let processedText = part;
-      for (const { reg, color } of this.config.customColorRules) {
-        const regex = new RegExp(reg, "g");
-
+      for (const { regex, colorize } of colorRules) {
+        regex.lastIndex = 0;
         processedText = processedText.replace(regex, (match) => {
-          const chalkFn = chalk[color];
-          if (typeof chalkFn !== 'function') {
-            return match;
-          }
-          const coloredMatch = chalkFn(match);
-          const colorParts = coloredMatch.split(ansiColorRegex).filter(Boolean);
+          const coloredMatch = colorize(match);
+          const colorParts = coloredMatch
+            .split(Toolkit.ansiColorSplitRegex)
+            .filter(Boolean);
           const colorStart = colorParts[0];
           const matchText = colorParts
             .filter((p) => !p.startsWith("\u001b["))
@@ -281,28 +319,45 @@ class Toolkit {
       return time;
     }
 
-    const now = time instanceof Date ? moment(time) : moment();
+    const sourceTime = time instanceof Date ? time : new Date();
     const timeFormat = format || this.config.timeFormat;
     const { timezone } = this.config;
+    const timeValue = sourceTime.valueOf();
 
     if (timeFormat === "timestamp") {
-      return now.valueOf();
+      return timeValue;
     }
+
+    const cacheKey = `${timeValue}\u0000${timeFormat}\u0000${timezone || ""}`;
+    if (this._timeCacheKey === cacheKey && this._timeCacheValue !== undefined) {
+      return this._timeCacheValue;
+    }
+
+    const now = moment(sourceTime);
+    let formattedTime: string | number;
 
     if (timezone) {
       switch (timeFormat) {
         case "ISO":
-          return now.tz(timezone).toISOString();
+          formattedTime = now.tz(timezone).toISOString();
+          break;
         case "GMT":
-          return now.tz("GMT").format("YYYY-MM-DDTHH:mm:ss.SSS") + "Z";
+          formattedTime = now.tz("GMT").format("YYYY-MM-DDTHH:mm:ss.SSS") + "Z";
+          break;
         case "UTC":
-          return now.utc().format();
+          formattedTime = now.utc().format();
+          break;
         default:
-          return now.tz(timezone).format(timeFormat);
+          formattedTime = now.tz(timezone).format(timeFormat);
       }
+    } else {
+      formattedTime = now.format(timeFormat);
     }
 
-    return now.format(timeFormat);
+    this._timeCacheKey = cacheKey;
+    this._timeCacheValue = formattedTime;
+
+    return formattedTime;
   }
 
   private compileLogTemplate(template: string): LogTemplatePart[] {
