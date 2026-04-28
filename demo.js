@@ -11,6 +11,8 @@ rlog.config.setConfig({
   silent: false,
 });
 
+const defaultLogTemplate = rlog.config.logTemplate;
+
 rlog.onExit(() => {
   rlog.warn("rlog.exit() called and event triggered.");
 });
@@ -90,6 +92,16 @@ rlog.config.timeFormat = "ISO";
 rlog.info("ISO");
 rlog.config.timeFormat = "YYYY-MM-DD HH:mm:ss.SSS";
 rlog.info("YYYY-MM-DD HH:mm:ss.SSS");
+
+rlog.info("");
+rlog.info("Log template:");
+rlog.config.logTemplate = "{time:HH:mm:ss} {level}: {message}";
+rlog.warn("custom template with inline time format", { used: "91%" });
+rlog.config.logTemplate = "[{level}] ";
+rlog.info("template without message placeholder appends the message");
+rlog.config.logTemplate = "T-E-M-P-L-A-T-E | {level}: {message}";
+rlog.info("wide prefix keeps multiline padding aligned\nsecond line");
+rlog.config.logTemplate = defaultLogTemplate;
 
 rlog.info("");
 rlog.info("Progress bar:");

@@ -135,6 +135,37 @@ rlog.log("a", { b: 1 }, 1);
 rlog.log("user=%s score=%d", "Ravello", 100);
 ```
 
+### 自定义日志模板
+
+可通过 `logTemplate` 控制日志前缀和正文位置。默认模板为：
+
+```javascript
+{
+  logTemplate: "[{time}][{level}] {message}"
+}
+```
+
+支持的占位符：
+
+| 占位符                  | 描述                                      |
+| ----------------------- | ----------------------------------------- |
+| `{message}`             | 日志正文                                  |
+| `{level}` / `{type}`    | 日志等级，例如 `INFO`、`WARN`             |
+| `{time}`                | 按 `timeFormat` 和 `timezone` 渲染的时间  |
+| `{time:HH:mm:ss}`       | 在当前模板中临时覆盖时间格式              |
+
+例如：
+
+```javascript
+const rlog = new Rlog({
+  logTemplate: "{time:HH:mm:ss} {level}: {message}",
+});
+
+rlog.warn("disk usage", { used: "91%" });
+```
+
+如果模板中没有 `{message}`，日志正文会自动追加到模板末尾。`timeFormat` 仍然保留，用于控制 `{time}` 的默认渲染方式。
+
 ### 仅在屏幕/文件中输出
 
 有些时候，日志输出并不一定要做到屏幕显示与文件同步。  
@@ -287,6 +318,7 @@ Config是一个用于配置rlog-js的类。可设置的项，详见[#配置项](
 | `logFilePath`          | string                                | undefined                 | 日志文件的路径，默认表示不将日志写入文件 |
 | `timeFormat`           | string                                | "YYYY-MM-DD HH:mm:ss.SSS" | 时间的格式                               |
 | `timezone`             | string                                | "GMT"                     | 时区                                     |
+| `logTemplate`          | string                                | "[{time}][{level}] {message}" | 日志输出模板                         |
 | `blockedWordsList`     | Array\<string\>                       | []                        | 需要屏蔽的敏感词列表                     |
 | `customColorRules`     | Array\<{reg: string, color: string}\> | 预设规则                  | 自定义的颜色规则列表                     |
 | `screenLength`         | number                                | 自动获取                  | 屏幕输出的最大宽度                       |
@@ -314,6 +346,7 @@ Toolkit是一个工具类，用于提供一些常用的工具函数。
 | `colorizeString(str)`        | 根据配置的颜色规则对字符串进行着色           |
 | `formatTime()`               | 根据配置的时间格式和时区生成时间字符串       |
 | `formatConsoleArgs(args)`    | 按 Node.js `console.log` 语义格式化参数      |
+| `formatLogMessage(...)`      | 根据日志模板渲染完整日志行                   |
 | `encryptPrivacyContent(str)` | 对字符串中的敏感内容进行加密                 |
 | `colorizeType(variable)`     | 根据变量的类型对其进行着色                   |
 | `padLines(str, width)`       | 对字符串中除第一行外的每一行进行缩进         |
@@ -365,6 +398,7 @@ rlog-js还提供了一些配置选项，可以在创建Rlog实例时进行配置
     logFilePath: undefined,     // 日志文件路径，如果不设置则不会输出到文件
     timeFormat: "YYYY-MM-DD HH:mm:ss.SSS", // 时间格式
     timezone: "GMT",      // 时区
+    logTemplate: "[{time}][{level}] {message}", // 日志输出模板
     blockedWordsList: [], // 需要屏蔽的词汇列表
     autoInit: true,       // 是否自动初始化日志文件
     customColorRules: [   // 自定义颜色规则

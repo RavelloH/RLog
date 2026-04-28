@@ -285,6 +285,33 @@ async function run() {
     "multiline output should indent second line"
   );
 
+  const templateRlog = createRlog({
+    logTemplate: "<{level}> {time:YYYY} :: {message}",
+  });
+  assert.match(
+    stripAnsi(captureStdout(() => templateRlog.info("templated"))),
+    /^<INFO> \d{4} :: templated\n$/,
+    "custom template should render level, inline time format, and message"
+  );
+
+  const appendTemplateRlog = createRlog({
+    logTemplate: "[{level}] ",
+  });
+  assert.strictEqual(
+    stripAnsi(captureStdout(() => appendTemplateRlog.info("appended"))),
+    "[INFO] appended\n",
+    "template without {message} should append message at the end"
+  );
+
+  const widePrefixRlog = createRlog({
+    logTemplate: "前缀{level}: {message}",
+  });
+  assert.strictEqual(
+    stripAnsi(captureStdout(() => widePrefixRlog.info("one\ntwo"))),
+    `前缀INFO: one\n${" ".repeat(10)}two\n`,
+    "multiline padding should use terminal display width"
+  );
+
   const privacyRlog = createRlog({
     blockedWordsList: ["secret", "[0-9]{4}"],
   });
@@ -328,6 +355,29 @@ async function run() {
     );
   } finally {
     fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+
+  const templateTempDir = fs.mkdtempSync(path.join(os.tmpdir(), "rlog-template-"));
+  const templateLogFilePath = path.join(templateTempDir, "rlog.log");
+
+  try {
+    const templateFileRlog = createRlog({
+      autoInit: true,
+      logFilePath: templateLogFilePath,
+      logTemplate: "<{level}> {time:YYYY} {message}",
+    });
+
+    captureStdout(() => templateFileRlog.info("file", { b: 1 }, 1));
+    await closeLogStream(templateFileRlog);
+
+    const templateFileContent = fs.readFileSync(templateLogFilePath, "utf8");
+    assert.match(
+      templateFileContent,
+      /^<INFO> \d{4} file \{ b: 1 \} 1\r?\n$/,
+      "file output should use custom template"
+    );
+  } finally {
+    fs.rmSync(templateTempDir, { recursive: true, force: true });
   }
 
   const sameProcessTree = runScriptTree(

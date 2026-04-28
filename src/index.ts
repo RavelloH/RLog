@@ -5,13 +5,20 @@ import "moment-timezone";
 import { formatWithOptions } from "util";
 
 /** Types that can be converted to string for logging */
-type Tostringable = string | null | boolean | undefined | number | bigint;
+type Tostringable = string | null | boolean | undefined | number | bigint | Date;
 
 /** Top-level Rlog methods that write to both screen and file */
 type RlogApiKey = 'info' | 'warning' | 'warn' | 'error' | 'success';
 
 /** Top-level Rlog methods available for automatic level detection */
 type AutoLogKey = 'success' | 'warning' | 'error';
+
+/** Log template token compiled for fast rendering */
+type LogTemplatePart =
+  | { type: "literal"; value: string }
+  | { type: "message" }
+  | { type: "level" }
+  | { type: "time"; format?: string };
 
 /** Available chalk colors for string colorization */
 type ChalkColor = 'red' | 'green' | 'yellow' | 'blue' | 'magenta' | 'cyan' | 'gray';
@@ -38,6 +45,8 @@ interface ConfigOptions {
   timeFormat?: string;
   /** Timezone for time formatting (e.g., 'Asia/Shanghai') */
   timezone?: string;
+  /** Log output template. Supports {time}, {time:FORMAT}, {level}, {type}, and {message} */
+  logTemplate?: string;
   /** List of patterns (regex or string) to mask in logs */
   blockedWordsList?: string[];
   /** Maximum width for screen output */
@@ -62,6 +71,7 @@ class Config {
   logFilePath?: string = undefined;
   timeFormat: string = "YYYY-MM-DD HH:mm:ss.SSS";
   timezone?: string = undefined;
+  logTemplate: string = "[{time}][{level}] {message}";
   blockedWordsList: string[] = [];
   screenLength: number = process.stdout.columns || 80;
   autoInit: boolean = true;
@@ -172,6 +182,9 @@ class Toolkit {
   screen!: Screen;
   private _regexCache?: RegExp[];
   private _regexCacheKey?: string;
+  private _logTemplateCache?: LogTemplatePart[];
+  private _logTemplateCacheKey?: string;
+  private static readonly ansiRegex = /\x1B\[[0-?]*[ -/]*[@-~]/g;
 
   constructor(config: Config) {
     this.config = config;
@@ -263,9 +276,14 @@ class Toolkit {
    * formatTime() // 1734501000123
    * ```
    */
-  formatTime(): string | number {
-    const now = moment();
-    const { timeFormat, timezone } = this.config;
+  formatTime(format?: string, time?: Tostringable): string | number | boolean | bigint | null {
+    if (time !== undefined && time !== null && !(time instanceof Date)) {
+      return time;
+    }
+
+    const now = time instanceof Date ? moment(time) : moment();
+    const timeFormat = format || this.config.timeFormat;
+    const { timezone } = this.config;
 
     if (timeFormat === "timestamp") {
       return now.valueOf();
@@ -285,6 +303,150 @@ class Toolkit {
     }
 
     return now.format(timeFormat);
+  }
+
+  private compileLogTemplate(template: string): LogTemplatePart[] {
+    if (this._logTemplateCache && this._logTemplateCacheKey === template) {
+      return this._logTemplateCache;
+    }
+
+    const parts: LogTemplatePart[] = [];
+    const tokenRegex = /\{(message|level|type|time(?::([^}]+))?)\}/g;
+    let cursor = 0;
+    let match: RegExpExecArray | null;
+
+    while ((match = tokenRegex.exec(template))) {
+      if (match.index > cursor) {
+        parts.push({ type: "literal", value: template.slice(cursor, match.index) });
+      }
+
+      const token = match[1];
+      if (token === "message") {
+        parts.push({ type: "message" });
+      } else if (token === "level" || token === "type") {
+        parts.push({ type: "level" });
+      } else {
+        parts.push({ type: "time", format: match[2] });
+      }
+
+      cursor = match.index + match[0].length;
+    }
+
+    if (cursor < template.length) {
+      parts.push({ type: "literal", value: template.slice(cursor) });
+    }
+
+    this._logTemplateCache = parts;
+    this._logTemplateCacheKey = template;
+
+    return parts;
+  }
+
+  private stripAnsi(str: string): string {
+    return str.replace(Toolkit.ansiRegex, "");
+  }
+
+  private isCombiningCodePoint(code: number): boolean {
+    return (
+      (code >= 0x0300 && code <= 0x036f) ||
+      (code >= 0x1ab0 && code <= 0x1aff) ||
+      (code >= 0x1dc0 && code <= 0x1dff) ||
+      (code >= 0x20d0 && code <= 0x20ff) ||
+      (code >= 0xfe20 && code <= 0xfe2f)
+    );
+  }
+
+  private isFullWidthCodePoint(code: number): boolean {
+    return (
+      code >= 0x1100 &&
+      (code <= 0x115f ||
+        code === 0x2329 ||
+        code === 0x232a ||
+        (code >= 0x2e80 && code <= 0xa4cf && code !== 0x303f) ||
+        (code >= 0xac00 && code <= 0xd7a3) ||
+        (code >= 0xf900 && code <= 0xfaff) ||
+        (code >= 0xfe10 && code <= 0xfe19) ||
+        (code >= 0xfe30 && code <= 0xfe6f) ||
+        (code >= 0xff00 && code <= 0xff60) ||
+        (code >= 0xffe0 && code <= 0xffe6) ||
+        (code >= 0x1f300 && code <= 0x1f64f) ||
+        (code >= 0x1f900 && code <= 0x1f9ff) ||
+        (code >= 0x20000 && code <= 0x3fffd))
+    );
+  }
+
+  private displayWidth(str: string): number {
+    let width = 0;
+    const clean = this.stripAnsi(str);
+
+    for (const char of clean) {
+      const code = char.codePointAt(0);
+      if (code === undefined) continue;
+      if (code <= 0x1f || (code >= 0x7f && code <= 0x9f)) continue;
+      if (this.isCombiningCodePoint(code)) continue;
+      width += this.isFullWidthCodePoint(code) ? 2 : 1;
+    }
+
+    return width;
+  }
+
+  private currentLineDisplayWidth(str: string): number {
+    const lastLineBreak = str.lastIndexOf("\n");
+    return this.displayWidth(
+      lastLineBreak === -1 ? str : str.slice(lastLineBreak + 1)
+    );
+  }
+
+  private formatTemplateTime(format: string | undefined, time?: Tostringable): string {
+    return String(this.formatTime(format, time));
+  }
+
+  /**
+   * Render a full log line from the configured template.
+   * @param level - Log level label
+   * @param message - Already formatted log message
+   * @param time - Shared timestamp for screen/file output
+   * @param colorizedLevel - Optional colored level label for screen output
+   * @returns Rendered log line without trailing newline
+   */
+  formatLogMessage(
+    level: string,
+    message: string,
+    time?: Tostringable,
+    colorizedLevel?: string
+  ): string {
+    const parts = this.compileLogTemplate(this.config.logTemplate || "{message}");
+    const renderedLevel = colorizedLevel || level;
+    let output = "";
+    let hasMessage = false;
+
+    const appendMessage = () => {
+      output += this.padLines(message, this.currentLineDisplayWidth(output));
+      hasMessage = true;
+    };
+
+    for (const part of parts) {
+      switch (part.type) {
+        case "literal":
+          output += part.value;
+          break;
+        case "level":
+          output += renderedLevel;
+          break;
+        case "time":
+          output += this.formatTemplateTime(part.format, time);
+          break;
+        case "message":
+          appendMessage();
+          break;
+      }
+    }
+
+    if (!hasMessage) {
+      appendMessage();
+    }
+
+    return output;
   }
 
   /**
@@ -384,7 +546,7 @@ class Toolkit {
     if (!str.includes("\n")) return str;
 
     const lines = str.split("\n");
-    const padding = " ".repeat(width);
+    const padding = " ".repeat(Math.max(0, width));
 
     return (
       lines[0] +
@@ -428,22 +590,18 @@ class Screen {
    * @private
    */
   private _formatMessage(type: string, color: ChalkColor, message: any, time?: Tostringable): string {
-    const timeheader = `[${time || this.toolkit.formatTime()}]`;
     const chalkFn = chalk[color];
     const colorizedType = typeof chalkFn === 'function' ? chalkFn(type) : type;
 
     const processedMessage = this.toolkit.encryptPrivacyContent(
-      this.toolkit.padLines(
-        type === "SUCC" || type === "EXIT"
-          ? (typeof chalkFn === 'function' ? chalkFn(message) : message)
-          : this.toolkit.colorizeType(message),
-        timeheader.length + 7
-      )
+      type === "SUCC" || type === "EXIT"
+        ? (typeof chalkFn === 'function' ? chalkFn(String(message)) : String(message))
+        : this.toolkit.colorizeType(message)
     );
 
-    return `${timeheader}[${colorizedType}] ${this.toolkit.colorizeString(
-      processedMessage
-    )}\n`;
+    return this.toolkit.colorizeString(
+      this.toolkit.formatLogMessage(type, processedMessage, time, colorizedType)
+    ) + "\n";
   }
 
   /**
@@ -556,10 +714,11 @@ class File {
    * @private
    */
   private _formatMessage(type: string, message: any, time?: Tostringable): string {
-    return `[${time || this.toolkit.formatTime()
-      }][${type}] ${this.toolkit.encryptPrivacyContent(
-        this.toolkit.stringify(message)
-      )}`;
+    return this.toolkit.formatLogMessage(
+      type,
+      this.toolkit.encryptPrivacyContent(this.toolkit.stringify(message)),
+      time
+    );
   }
 
   /**
@@ -660,7 +819,7 @@ class File {
 export interface RLogExitError extends Error {
   isRLogExit: boolean;
   message: string;
-  time: string | number;
+  time: Tostringable;
 }
 
 /**
@@ -740,7 +899,7 @@ class Rlog {
    * @private
    */
   #writeFormatted(key: RlogApiKey, message: string): void {
-    const time = this.toolkit.formatTime();
+    const time = new Date();
     this.file[key](message, time);
     this.screen[key](message, time);
   }
@@ -849,7 +1008,7 @@ class Rlog {
    * ```
    */
   exit(message: any): never {
-    const time = this.toolkit.formatTime();
+    const time = new Date();
     this.screen.exit(message, time);
     const ExitError = new Error("RLog_EXIT_PROCESS") as RLogExitError;
     ExitError.isRLogExit = true;
