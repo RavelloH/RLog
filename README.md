@@ -348,7 +348,6 @@ Toolkit是一个工具类，用于提供一些常用的工具函数。
 | `formatConsoleArgs(args)`    | 按 Node.js `console.log` 语义格式化参数      |
 | `formatLogMessage(...)`      | 根据日志模板渲染完整日志行                   |
 | `encryptPrivacyContent(str)` | 对字符串中的敏感内容进行加密                 |
-| `colorizeType(variable)`     | 根据变量的类型对其进行着色                   |
 | `padLines(str, width)`       | 对字符串中除第一行外的每一行进行缩进         |
 
 ### Screen
@@ -478,7 +477,7 @@ RLog/
 
 使用 TypeScript 重写后，所有潜在的类型错误都在编译期被捕获：
 
-- ✅ 所有 `chalk` 颜色调用都有类型检查
+- ✅ 内置 ANSI 颜色输出有明确的类型约束
 - ✅ 配置项有完整的接口定义
 - ✅ 异步操作有正确的 Promise 类型
 - ✅ 所有类方法都有明确的返回类型

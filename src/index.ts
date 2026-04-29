@@ -1,4 +1,3 @@
-import chalk from "chalk";
 import * as fs from "fs-extra";
 import moment from "moment";
 import "moment-timezone";
@@ -26,8 +25,8 @@ type CompiledColorRule = {
   colorize: (value: string) => string;
 };
 
-/** Available chalk colors for string colorization */
-type ChalkColor = 'red' | 'green' | 'yellow' | 'blue' | 'magenta' | 'cyan' | 'gray';
+/** Available ANSI colors for string colorization */
+type LogColor = 'red' | 'green' | 'yellow' | 'blue' | 'magenta' | 'cyan' | 'gray';
 
 /**
  * Custom color rule for string matching and colorization
@@ -36,7 +35,7 @@ interface CustomColorRule {
   /** Regular expression pattern to match */
   reg: string;
   /** Color to apply to matched strings */
-  color: ChalkColor;
+  color: LogColor;
 }
 
 /**
@@ -123,9 +122,7 @@ class Config {
   }
 
   private applyRuntimeSideEffects(): void {
-    if (!this.enableColorfulOutput) {
-      chalk.level = 0;
-    }
+    // Reserved for future config side effects.
   }
 
   /**
@@ -196,9 +193,27 @@ class Toolkit {
   private _timeCacheValue?: string | number;
   private static readonly ansiRegex = /\x1B\[[0-?]*[ -/]*[@-~]/g;
   private static readonly ansiColorSplitRegex = /(\u001b\[\d+m)/g;
+  private static readonly ansiColorCodes: Record<LogColor, number> = {
+    red: 31,
+    green: 32,
+    yellow: 33,
+    blue: 34,
+    magenta: 35,
+    cyan: 36,
+    gray: 90,
+  };
 
   constructor(config: Config) {
     this.config = config;
+  }
+
+  colorText(str: string, color: LogColor): string {
+    if (!this.config.enableColorfulOutput || !str) return str;
+    const colorCode = Toolkit.ansiColorCodes[color];
+    if (!colorCode) return str;
+    const colorStart = `\u001b[${colorCode}m`;
+    const colorEnd = "\u001b[39m";
+    return colorStart + str.replace(/\u001b\[39m/g, colorEnd + colorStart) + colorEnd;
   }
 
   /**
@@ -238,12 +253,9 @@ class Toolkit {
 
     this._colorRuleCache = rules
       .map(({ reg, color }) => {
-        const chalkFn = chalk[color];
-        if (typeof chalkFn !== "function") return null;
-
         return {
           regex: new RegExp(reg, "g"),
-          colorize: chalkFn as (value: string) => string,
+          colorize: (value: string) => this.colorText(value, color),
         };
       })
       .filter((rule): rule is CompiledColorRule => rule !== null);
@@ -281,20 +293,17 @@ class Toolkit {
         regex.lastIndex = 0;
         processedText = processedText.replace(regex, (match) => {
           const coloredMatch = colorize(match);
-          const colorParts = coloredMatch
-            .split(Toolkit.ansiColorSplitRegex)
-            .filter(Boolean);
-          const colorStart = colorParts[0];
-          const matchText = colorParts
-            .filter((p) => !p.startsWith("\u001b["))
-            .join("");
+          Toolkit.ansiRegex.lastIndex = 0;
+          const hasColor = Toolkit.ansiRegex.test(coloredMatch);
+          Toolkit.ansiRegex.lastIndex = 0;
+          if (!hasColor) return match;
 
           const restoreColor =
             currentColorState.length > 0
               ? currentColorState.join("")
-              : "\u001b[39m";
+              : "";
 
-          return colorStart + matchText + restoreColor;
+          return coloredMatch + restoreColor;
         });
       }
 
@@ -509,8 +518,8 @@ class Toolkit {
    * @param args - Values passed to a top-level Rlog API
    * @returns Console-compatible formatted message
    */
-  formatConsoleArgs(args: any[]): string {
-    return formatWithOptions({ colors: false }, ...args);
+  formatConsoleArgs(args: any[], colors: boolean = false): string {
+    return formatWithOptions({ colors }, ...args);
   }
 
   /**
@@ -549,42 +558,6 @@ class Toolkit {
         return "*".repeat(match.length);
       });
     }, str);
-  }
-
-  /**
-   * Colorize variable based on its type
-   * @param variable - Variable to colorize
-   * @returns Colored string representation
-   */
-  colorizeType(variable: any): string {
-    if (variable === null) return chalk.red("null");
-    if (variable === undefined) return chalk.gray("undefined");
-
-    const type = typeof variable;
-
-    switch (type) {
-      case "string":
-        return variable;
-      case "number":
-        return chalk.blue(variable.toString());
-      case "boolean":
-        return variable ? chalk.green("true") : chalk.red("false");
-      case "object":
-        try {
-          if (Array.isArray(variable)) {
-            return chalk.yellow(JSON.stringify(variable, null, 2));
-          }
-          return chalk.magenta(JSON.stringify(variable, null, 2));
-        } catch (e) {
-          return chalk.red("[Circular Object]");
-        }
-      case "function":
-        return chalk.cyan(variable.toString().split("\n")[0] + "...");
-      case "symbol":
-        return chalk.yellow(variable.toString());
-      default:
-        return String(variable);
-    }
   }
 
   /**
@@ -644,26 +617,32 @@ class Screen {
    * Format a log message with timestamp and type
    * @private
    */
-  private _formatMessage(type: string, color: ChalkColor, message: any, time?: Tostringable): string {
-    const chalkFn = chalk[color];
-    const colorizedType = typeof chalkFn === 'function' ? chalkFn(type) : type;
+  private _formatMessage(type: string, color: LogColor, message: any, time?: Tostringable): string {
+    const colorizedType = this.toolkit.colorText(type, color);
+    const inspectedMessage =
+      typeof message === "string"
+        ? message
+        : this.toolkit.formatConsoleArgs(
+            [message],
+            this.toolkit.config.enableColorfulOutput
+          );
 
-    const processedMessage = this.toolkit.encryptPrivacyContent(
-      type === "SUCC" || type === "EXIT"
-        ? (typeof chalkFn === 'function' ? chalkFn(String(message)) : String(message))
-        : this.toolkit.colorizeType(message)
+    const processedMessage = this.toolkit.colorizeString(
+      this.toolkit.encryptPrivacyContent(inspectedMessage)
     );
+    const coloredMessage =
+      type === "SUCC" || type === "EXIT"
+        ? this.toolkit.colorText(processedMessage, color)
+        : processedMessage;
 
-    return this.toolkit.colorizeString(
-      this.toolkit.formatLogMessage(type, processedMessage, time, colorizedType)
-    ) + "\n";
+    return this.toolkit.formatLogMessage(type, coloredMessage, time, colorizedType) + "\n";
   }
 
   /**
    * Write log to stdout
    * @private
    */
-  private _log(type: string, color: ChalkColor, message: any, time?: Tostringable): void {
+  private _log(type: string, color: LogColor, message: any, time?: Tostringable): void {
     process.stdout.write(this._formatMessage(type, color, message, time));
   }
 
@@ -953,10 +932,10 @@ class Rlog {
    * Write an already formatted message through the selected top-level API.
    * @private
    */
-  #writeFormatted(key: RlogApiKey, message: string): void {
+  #writeFormatted(key: RlogApiKey, fileMessage: string, screenMessage: string = fileMessage): void {
     const time = new Date();
-    this.file[key](message, time);
-    this.screen[key](message, time);
+    this.file[key](fileMessage, time);
+    this.screen[key](screenMessage, time);
   }
 
   /**
@@ -965,7 +944,11 @@ class Rlog {
    */
   #genApi(key: RlogApiKey) {
     return (...args: any[]) => {
-      this.#writeFormatted(key, this.toolkit.formatConsoleArgs(args));
+      this.#writeFormatted(
+        key,
+        this.toolkit.formatConsoleArgs(args),
+        this.toolkit.formatConsoleArgs(args, this.config.enableColorfulOutput)
+      );
     };
   }
 
@@ -1035,15 +1018,16 @@ class Rlog {
       state.length -
       1 -
       paddedPercent.length;
+    const progressLabel = this.toolkit.colorText("PROG", "magenta");
 
     if (availableLength <= 1) {
       process.stdout.write(
-        `\r${timeheader}[${chalk.magenta("PROG")}] ${paddedPercent} ${state}`
+        `\r${timeheader}[${progressLabel}] ${paddedPercent} ${state}`
       );
     } else {
       const doneLength = Math.floor(availableLength * (num / max));
       process.stdout.write(
-        `\r${timeheader}[${chalk.magenta("PROG")}] [${"|".repeat(
+        `\r${timeheader}[${progressLabel}] [${"|".repeat(
           doneLength
         )}${" ".repeat(availableLength - doneLength)}]${paddedPercent} ${state}`
       );
@@ -1090,13 +1074,17 @@ class Rlog {
    */
   log(...args: any[]): void {
     const message = this.toolkit.formatConsoleArgs(args);
+    const screenMessage = this.toolkit.formatConsoleArgs(
+      args,
+      this.config.enableColorfulOutput
+    );
     for (const { key, regex } of this.keywordPatterns) {
       if (regex.test(message)) {
-        this.#writeFormatted(key, message);
+        this.#writeFormatted(key, message, screenMessage);
         return;
       }
     }
-    this.#writeFormatted("info", message);
+    this.#writeFormatted("info", message, screenMessage);
   }
 
   /**

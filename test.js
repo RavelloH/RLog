@@ -17,6 +17,11 @@ function stripAnsi(value) {
   return value.replace(ANSI_RE, "");
 }
 
+function hasAnsi(value) {
+  ANSI_RE.lastIndex = 0;
+  return ANSI_RE.test(value);
+}
+
 function createRlog(config = {}) {
   return new Rlog({
     autoInit: false,
@@ -234,6 +239,91 @@ async function run() {
     assertRlogCall(rlog, "info", item.args, "INFO", item.label);
   }
 
+  const typeColorRlog = createRlog({
+    logTemplate: "{message}",
+    customColorRules: [],
+  });
+  const typeColorSamples = [
+    { label: "number", args: [123] },
+    { label: "boolean", args: [true] },
+    { label: "object", args: [{ time: 1777431351982, text: "example" }] },
+    { label: "array", args: [[1, 2, "5"]] },
+    { label: "function", args: [sampleFunction] },
+    { label: "error", args: [new Error("demo error")] },
+  ];
+
+  for (const item of typeColorSamples) {
+    const output = captureStdout(() => {
+      typeColorRlog.info(...item.args);
+    });
+    assert.ok(hasAnsi(output), `${item.label}: screen output should include type color`);
+    assert.strictEqual(
+      stripAnsi(output),
+      `${expectedMessage(...item.args)}\n`,
+      `${item.label}: colored screen output should preserve console text`
+    );
+  }
+
+  const defaultRuleRlog = new Rlog({
+    autoInit: false,
+    silent: true,
+    timeFormat: "timestamp",
+    logTemplate: "{message}",
+  });
+  assert.strictEqual(
+    stripAnsi(captureStdout(() => defaultRuleRlog.info(true))),
+    "true\n",
+    "default string color rules should not duplicate colored boolean output"
+  );
+
+  const lowLevelScreenNumber = captureStdout(() => {
+    typeColorRlog.screen.info(123);
+  });
+  assert.ok(
+    lowLevelScreenNumber.includes("\u001b[33m123"),
+    "low-level screen output should use Node inspect type colors"
+  );
+  assert.strictEqual(
+    stripAnsi(lowLevelScreenNumber),
+    "123\n",
+    "low-level screen type colors should preserve console text"
+  );
+
+  const successOutput = captureStdout(() => {
+    typeColorRlog.success("success message");
+  });
+  assert.ok(
+    successOutput.includes("\u001b[32msuccess message"),
+    "success message body should be green"
+  );
+  assert.strictEqual(
+    stripAnsi(successOutput),
+    "success message\n",
+    "success message color should preserve console text"
+  );
+
+  const progressOutput = captureStdout(() => {
+    typeColorRlog.progress(5, 10);
+  });
+  assert.ok(
+    progressOutput.includes("\u001b[35mPROG\u001b[39m"),
+    "progress label should be magenta"
+  );
+
+  const noColorRlog = createRlog({
+    enableColorfulOutput: false,
+    logTemplate: "{message}",
+    customColorRules: [{ reg: "red-word", color: "red" }],
+  });
+  const noColorOutput = captureStdout(() => {
+    noColorRlog.success("red-word", { ok: true });
+    noColorRlog.progress(1, 2);
+  });
+  assert.ok(
+    !hasAnsi(noColorOutput),
+    "enableColorfulOutput=false should disable type, rule, level, success, and progress colors"
+  );
+
   assertRlogCall(rlog, "warn", ["warn method", { code: 1 }], "WARN", "warn");
   assertRlogCall(
     rlog,
@@ -292,6 +382,26 @@ async function run() {
     stripAnsi(captureStdout(() => templateRlog.info("templated"))),
     /^<INFO> \d{4} :: templated\n$/,
     "custom template should render level, inline time format, and message"
+  );
+
+  const colorBoundaryRlog = createRlog({
+    logTemplate: "T={time:YYYY-MM-DD} L={level} M={message}",
+    customColorRules: [{ reg: "2026-04-29", color: "red" }],
+  });
+  const colorBoundaryOutput = captureStdout(() => {
+    colorBoundaryRlog.screen.info(
+      "message 2026-04-29",
+      new Date("2026-04-29T00:00:00.000Z")
+    );
+  });
+
+  assert.ok(
+    colorBoundaryOutput.includes("T=2026-04-29 L="),
+    "custom color rules should not colorize template time"
+  );
+  assert.ok(
+    colorBoundaryOutput.includes("M=message \u001b[31m2026-04-29"),
+    "custom color rules should still colorize message content"
   );
 
   const appendTemplateRlog = createRlog({

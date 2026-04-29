@@ -42,6 +42,8 @@ rlog.info({
 });
 rlog.info([1, 2, "5"]);
 rlog.info(sampleFunction);
+rlog.info(null);
+rlog.info(undefined);
 rlog.info(new Error("demo error"));
 
 rlog.info("");
