@@ -404,6 +404,48 @@ async function run() {
     "custom color rules should still colorize message content"
   );
 
+  const fixedDate = new Date("2026-04-28T14:37:36.051Z");
+  const timezoneRlog = createRlog({
+    timezone: "Asia/Shanghai",
+    logTemplate:
+      "{time:YYYY-MM-DD HH:mm:ss.SSS Z ZZ ddd dddd MMM MMMM A a} {message}",
+  });
+  assert.strictEqual(
+    stripAnsi(captureStdout(() => timezoneRlog.screen.info("time", fixedDate))),
+    "2026-04-28 22:37:36.051 +08:00 +0800 Tue Tuesday Apr April PM pm time\n",
+    "time formatter should support common tokens and IANA timezones"
+  );
+
+  const chicagoRlog = createRlog({
+    timezone: "America/Chicago",
+    logTemplate: "{time:YYYY-MM-DD HH:mm:ss Z} {message}",
+  });
+  assert.strictEqual(
+    stripAnsi(captureStdout(() => chicagoRlog.screen.info("time", fixedDate))),
+    "2026-04-28 09:37:36 -05:00 time\n",
+    "time formatter should apply daylight-saving timezone offsets"
+  );
+
+  const specialTimeRlog = createRlog({
+    timezone: "Asia/Shanghai",
+    logTemplate: "{time:ISO}|{time:GMT}|{time:UTC}|{time:timestamp}|{message}",
+  });
+  assert.strictEqual(
+    stripAnsi(captureStdout(() => specialTimeRlog.screen.info("time", fixedDate))),
+    "2026-04-28T14:37:36.051Z|2026-04-28T14:37:36.051Z|2026-04-28T14:37:36Z|1777387056051|time\n",
+    "time formatter should support ISO, GMT, UTC, and timestamp special formats"
+  );
+
+  const literalTimeRlog = createRlog({
+    timezone: "UTC",
+    logTemplate: "{time:YYYY[year]MM[month]DD} {message}",
+  });
+  assert.strictEqual(
+    stripAnsi(captureStdout(() => literalTimeRlog.screen.info("time", fixedDate))),
+    "2026year04month28 time\n",
+    "time formatter should support bracket literals"
+  );
+
   const appendTemplateRlog = createRlog({
     logTemplate: "[{level}] ",
   });

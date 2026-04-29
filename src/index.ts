@@ -1,6 +1,5 @@
 import * as fs from "fs";
 import * as pathModule from "path";
-import moment from "moment-timezone";
 import { formatWithOptions } from "util";
 
 /** Types that can be converted to string for logging */
@@ -28,6 +27,18 @@ type CompiledColorRule = {
 /** Available ANSI colors for string colorization */
 type LogColor = 'red' | 'green' | 'yellow' | 'blue' | 'magenta' | 'cyan' | 'gray';
 
+type TimeParts = {
+  year: number;
+  month: number;
+  day: number;
+  hour: number;
+  minute: number;
+  second: number;
+  millisecond: number;
+  weekday: number;
+  offsetMinutes: number;
+};
+
 /**
  * Custom color rule for string matching and colorization
  */
@@ -46,7 +57,7 @@ interface ConfigOptions {
   enableColorfulOutput?: boolean;
   /** Path to log file. If undefined, logs won't be written to file */
   logFilePath?: string;
-  /** Time format string (moment.js format) or 'timestamp', 'ISO', 'GMT', 'UTC' */
+  /** Time format string (RLog token format) or 'timestamp', 'ISO', 'GMT', 'UTC' */
   timeFormat?: string;
   /** Timezone for time formatting (e.g., 'Asia/Shanghai') */
   timezone?: string;
@@ -202,6 +213,53 @@ class Toolkit {
     cyan: 36,
     gray: 90,
   };
+  private static readonly intlFormatterCache = new Map<string, Intl.DateTimeFormat>();
+  private static readonly monthNamesShort = [
+    "Jan",
+    "Feb",
+    "Mar",
+    "Apr",
+    "May",
+    "Jun",
+    "Jul",
+    "Aug",
+    "Sep",
+    "Oct",
+    "Nov",
+    "Dec",
+  ];
+  private static readonly monthNamesLong = [
+    "January",
+    "February",
+    "March",
+    "April",
+    "May",
+    "June",
+    "July",
+    "August",
+    "September",
+    "October",
+    "November",
+    "December",
+  ];
+  private static readonly weekdayNamesShort = [
+    "Sun",
+    "Mon",
+    "Tue",
+    "Wed",
+    "Thu",
+    "Fri",
+    "Sat",
+  ];
+  private static readonly weekdayNamesLong = [
+    "Sunday",
+    "Monday",
+    "Tuesday",
+    "Wednesday",
+    "Thursday",
+    "Friday",
+    "Saturday",
+  ];
 
   constructor(config: Config) {
     this.config = config;
@@ -214,6 +272,132 @@ class Toolkit {
     const colorStart = `\u001b[${colorCode}m`;
     const colorEnd = "\u001b[39m";
     return colorStart + str.replace(/\u001b\[39m/g, colorEnd + colorStart) + colorEnd;
+  }
+
+  private padNumber(value: number, length: number = 2): string {
+    return String(Math.abs(Math.trunc(value))).padStart(length, "0");
+  }
+
+  private normalizeTimezone(timezone?: string): string | undefined {
+    if (!timezone) return undefined;
+    if (timezone === "GMT") return "UTC";
+    return timezone;
+  }
+
+  private getIntlFormatter(timezone: string): Intl.DateTimeFormat {
+    let formatter = Toolkit.intlFormatterCache.get(timezone);
+    if (!formatter) {
+      formatter = new Intl.DateTimeFormat("en-US", {
+        timeZone: timezone,
+        hourCycle: "h23",
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+      });
+      Toolkit.intlFormatterCache.set(timezone, formatter);
+    }
+    return formatter;
+  }
+
+  private getTimeParts(date: Date, timezone?: string): TimeParts {
+    const normalizedTimezone = this.normalizeTimezone(timezone);
+
+    if (!normalizedTimezone) {
+      return {
+        year: date.getFullYear(),
+        month: date.getMonth() + 1,
+        day: date.getDate(),
+        hour: date.getHours(),
+        minute: date.getMinutes(),
+        second: date.getSeconds(),
+        millisecond: date.getMilliseconds(),
+        weekday: date.getDay(),
+        offsetMinutes: -date.getTimezoneOffset(),
+      };
+    }
+
+    try {
+      const partMap: Record<string, string> = {};
+      for (const part of this.getIntlFormatter(normalizedTimezone).formatToParts(date)) {
+        if (part.type !== "literal") partMap[part.type] = part.value;
+      }
+
+      const year = Number(partMap.year);
+      const month = Number(partMap.month);
+      const day = Number(partMap.day);
+      const hour = Number(partMap.hour);
+      const minute = Number(partMap.minute);
+      const second = Number(partMap.second);
+      const millisecond = date.getMilliseconds();
+      const asUtc = Date.UTC(year, month - 1, day, hour, minute, second, millisecond);
+
+      return {
+        year,
+        month,
+        day,
+        hour,
+        minute,
+        second,
+        millisecond,
+        weekday: new Date(Date.UTC(year, month - 1, day)).getUTCDay(),
+        offsetMinutes: Math.round((asUtc - date.valueOf()) / 60000),
+      };
+    } catch (err) {
+      return this.getTimeParts(date);
+    }
+  }
+
+  private formatOffset(offsetMinutes: number, colon: boolean): string {
+    const sign = offsetMinutes >= 0 ? "+" : "-";
+    const absoluteMinutes = Math.abs(offsetMinutes);
+    const hours = this.padNumber(Math.floor(absoluteMinutes / 60));
+    const minutes = this.padNumber(absoluteMinutes % 60);
+    return colon ? `${sign}${hours}:${minutes}` : `${sign}${hours}${minutes}`;
+  }
+
+  private formatDate(date: Date, format: string, timezone?: string): string {
+    const parts = this.getTimeParts(date, timezone);
+    const hour12 = parts.hour % 12 || 12;
+    const tokenValues: Record<string, string> = {
+      YYYY: this.padNumber(parts.year, 4),
+      YY: this.padNumber(parts.year % 100),
+      MMMM: Toolkit.monthNamesLong[parts.month - 1],
+      MMM: Toolkit.monthNamesShort[parts.month - 1],
+      MM: this.padNumber(parts.month),
+      M: String(parts.month),
+      DD: this.padNumber(parts.day),
+      D: String(parts.day),
+      HH: this.padNumber(parts.hour),
+      H: String(parts.hour),
+      hh: this.padNumber(hour12),
+      h: String(hour12),
+      mm: this.padNumber(parts.minute),
+      m: String(parts.minute),
+      ss: this.padNumber(parts.second),
+      s: String(parts.second),
+      SSS: this.padNumber(parts.millisecond, 3),
+      SS: this.padNumber(Math.floor(parts.millisecond / 10), 2),
+      S: String(Math.floor(parts.millisecond / 100)),
+      A: parts.hour < 12 ? "AM" : "PM",
+      a: parts.hour < 12 ? "am" : "pm",
+      dddd: Toolkit.weekdayNamesLong[parts.weekday],
+      ddd: Toolkit.weekdayNamesShort[parts.weekday],
+      dd: Toolkit.weekdayNamesShort[parts.weekday].slice(0, 2),
+      d: String(parts.weekday),
+      ZZ: this.formatOffset(parts.offsetMinutes, false),
+      Z: this.formatOffset(parts.offsetMinutes, true),
+    };
+
+    return format.replace(
+      /\[([^\]]*)\]|YYYY|MMMM|MMM|MM|M|DD|D|HH|H|hh|h|mm|m|ss|s|SSS|SS|S|A|a|dddd|ddd|dd|d|ZZ|Z/g,
+      (match, literal: string | undefined) => {
+        if (literal !== undefined) return literal;
+        return tokenValues[match] ?? match;
+      }
+    );
   }
 
   /**
@@ -343,25 +527,20 @@ class Toolkit {
       return this._timeCacheValue;
     }
 
-    const now = moment(sourceTime);
-    let formattedTime: string | number;
+    let formattedTime: string;
 
-    if (timezone) {
-      switch (timeFormat) {
-        case "ISO":
-          formattedTime = now.tz(timezone).toISOString();
-          break;
-        case "GMT":
-          formattedTime = now.tz("GMT").format("YYYY-MM-DDTHH:mm:ss.SSS") + "Z";
-          break;
-        case "UTC":
-          formattedTime = now.utc().format();
-          break;
-        default:
-          formattedTime = now.tz(timezone).format(timeFormat);
-      }
-    } else {
-      formattedTime = now.format(timeFormat);
+    switch (timeFormat) {
+      case "ISO":
+        formattedTime = sourceTime.toISOString();
+        break;
+      case "GMT":
+        formattedTime = this.formatDate(sourceTime, "YYYY-MM-DDTHH:mm:ss.SSS", "UTC") + "Z";
+        break;
+      case "UTC":
+        formattedTime = this.formatDate(sourceTime, "YYYY-MM-DDTHH:mm:ss[Z]", "UTC");
+        break;
+      default:
+        formattedTime = this.formatDate(sourceTime, timeFormat, timezone);
     }
 
     this._timeCacheKey = cacheKey;
