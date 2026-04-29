@@ -31,13 +31,10 @@
   },
   "homepage": "https://github.com/RavelloH/RLog#readme",
   "dependencies": {
-    "fs-extra": "^11.2.0",
-    "moment": "^2.29.4",
     "moment-timezone": "^0.5.43"
   },
   "devDependencies": {
-    "@types/fs-extra": "^11.0.4",
-    "@types/node": "^25.0.3",
+    "@types/node": "^25.6.0",
     "typescript": "^5.9.3"
   }
 }

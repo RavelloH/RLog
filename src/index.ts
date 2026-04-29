@@ -1,6 +1,6 @@
-import * as fs from "fs-extra";
-import moment from "moment";
-import "moment-timezone";
+import * as fs from "fs";
+import * as pathModule from "path";
+import moment from "moment-timezone";
 import { formatWithOptions } from "util";
 
 /** Types that can be converted to string for logging */
@@ -222,7 +222,8 @@ class Toolkit {
    */
   async checkLogFile(path: string): Promise<void> {
     try {
-      fs.ensureFileSync(path);
+      fs.mkdirSync(pathModule.dirname(path), { recursive: true });
+      fs.closeSync(fs.openSync(path, "a"));
       await fs.promises.access(path, fs.constants.F_OK);
     } catch (err) {
       try {
