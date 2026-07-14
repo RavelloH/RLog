@@ -1,10 +1,52 @@
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
+const { createHash } = require("node:crypto");
 const path = require("node:path");
 const { spawn } = require("node:child_process");
 const { PassThrough, Readable } = require("node:stream");
 const test = require("node:test");
 const { createRlog, memoryWritable, temporaryDirectory } = require("./helpers/rlog");
+
+function spawnOutputPump() {
+  const script = [
+    'const chunk = Buffer.alloc(64 * 1024, "x");',
+    'const waitForDrain = (stream) => new Promise((resolve) => stream.once("drain", resolve));',
+    'const writeMany = async (stream, count) => { for (let index = 0; index < count; index += 1) if (!stream.write(chunk)) await waitForDrain(stream); };',
+    'process.stdout.write("accepted-out\\n");',
+    'process.stderr.write("accepted-err\\n");',
+    'process.send({ type: "ready" });',
+    'process.on("message", async (message) => {',
+    '  if (message === "pump") { await Promise.all([writeMany(process.stdout, 192), writeMany(process.stderr, 192)]); process.send({ type: "pumped" }); }',
+    '  if (message === "handoff") { process.stdout.write("handoff-out\\n"); process.stderr.write("handoff-err\\n"); process.send({ type: "handed-off" }); }',
+    '});',
+  ].join("\n");
+  return spawn(process.execPath, ["-e", script], { stdio: ["ignore", "pipe", "pipe", "ipc"] });
+}
+
+function waitForMessage(child, type) {
+  return new Promise((resolve) => {
+    const listener = (message) => {
+      if (message?.type !== type) return;
+      child.removeListener("message", listener);
+      resolve();
+    };
+    child.on("message", listener);
+  });
+}
+
+function waitForChildClose(child) {
+  if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve();
+  return new Promise((resolve) => child.once("close", resolve));
+}
+
+async function terminateChild(child) {
+  if (child.exitCode === null && child.signalCode === null) child.kill();
+  await waitForChildClose(child);
+}
+
+function listenerCounts(stream) {
+  return Object.fromEntries(["data", "error", "end", "close"].map((event) => [event, stream.listenerCount(event)]));
+}
 
 test("child Capture mirrors retain child context and default only to screen", async () => {
   const temp = temporaryDirectory();
@@ -137,6 +179,127 @@ test("processHandle aborts Capture without killing the child process", async () 
   child.kill();
   await new Promise((resolve) => child.once("close", resolve));
   await rlog.close();
+});
+
+test("Process Capture defaults to drain without blocking a caller-owned child or leaking listeners", { timeout: 15000 }, async () => {
+  const child = spawnOutputPump();
+  const rlog = createRlog({ screenOutput: "none" });
+  const stdoutBaseline = listenerCounts(child.stdout);
+  const stderrBaseline = listenerCounts(child.stderr);
+  try {
+    const capture = rlog.capture.processHandle(child, {
+      stdoutDisplay: "none",
+      stderrDisplay: "none",
+      onStdoutLine: (line) => { if (line.text === "accepted-out") child.emit("capture-ready-out"); },
+      onStderrLine: (line) => { if (line.text === "accepted-err") child.emit("capture-ready-err"); },
+    });
+    const ready = waitForMessage(child, "ready");
+    const accepted = Promise.all([
+      new Promise((resolve) => child.once("capture-ready-out", resolve)),
+      new Promise((resolve) => child.once("capture-ready-err", resolve)),
+    ]);
+    await ready;
+    await accepted;
+    await assert.rejects(capture.abort(), (error) => error.code === "CAPTURE_ABORTED");
+    assert.equal(child.killed, false);
+    await new Promise((resolve) => setImmediate(resolve));
+    for (const [stream, baseline] of [[child.stdout, stdoutBaseline], [child.stderr, stderrBaseline]]) {
+      assert.equal(stream.listenerCount("data"), baseline.data + 1);
+      assert.equal(stream.listenerCount("error"), baseline.error + 1);
+      assert.equal(stream.listenerCount("end"), baseline.end + 1);
+      assert.equal(stream.listenerCount("close"), baseline.close + 1);
+    }
+    child.send("pump");
+    await waitForMessage(child, "pumped");
+  } finally {
+    await terminateChild(child);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(listenerCounts(child.stdout), stdoutBaseline);
+    assert.deepEqual(listenerCounts(child.stderr), stderrBaseline);
+    await rlog.close();
+  }
+});
+
+test("Logger close drains Process Capture without waiting for the child", { timeout: 15000 }, async () => {
+  const child = spawnOutputPump();
+  const rlog = createRlog({ screenOutput: "none" });
+  try {
+    const capture = rlog.capture.processHandle(child, { stdoutDisplay: "none", stderrDisplay: "none" });
+    await waitForMessage(child, "ready");
+    await rlog.close();
+    await assert.rejects(capture.done, (error) => error.code === "CAPTURE_ABORTED_BY_LOGGER_CLOSE");
+    assert.equal(child.killed, false);
+    child.send("pump");
+    await waitForMessage(child, "pumped");
+  } finally { await terminateChild(child); }
+});
+
+test("Process Capture pause is explicit and leaves both output streams paused", async () => {
+  const child = spawnOutputPump();
+  const rlog = createRlog({ screenOutput: "none" });
+  try {
+    const capture = rlog.capture.processHandle(child, { stdoutDisplay: "none", stderrDisplay: "none", detachMode: "pause" });
+    await waitForMessage(child, "ready");
+    await assert.rejects(capture.abort(), (error) => error.code === "CAPTURE_ABORTED");
+    assert.equal(child.stdout.isPaused(), true);
+    assert.equal(child.stderr.isPaused(), true);
+  } finally { await terminateChild(child); await rlog.close(); }
+});
+
+test("Process Capture handoff lets the caller consume later stdout and stderr without recording them", async () => {
+  const temp = temporaryDirectory();
+  const child = spawnOutputPump();
+  const rlog = createRlog({ screenOutput: "none" });
+  try {
+    const stdout = [];
+    const stderr = [];
+    const capture = rlog.capture.processHandle(child, {
+      stdoutFile: path.join(temp.directory, "stdout.log"),
+      stderrFile: path.join(temp.directory, "stderr.log"),
+      stdoutDisplay: "none",
+      stderrDisplay: "none",
+      detachMode: "handoff",
+    });
+    await waitForMessage(child, "ready");
+    await capture.flush();
+    await assert.rejects(capture.abort(), (error) => error.code === "CAPTURE_ABORTED");
+    child.stdout.on("data", (chunk) => stdout.push(chunk.toString()));
+    child.stderr.on("data", (chunk) => stderr.push(chunk.toString()));
+    child.send("handoff");
+    await waitForMessage(child, "handed-off");
+    assert.match(stdout.join(""), /handoff-out/);
+    assert.match(stderr.join(""), /handoff-err/);
+    assert.doesNotMatch(fs.readFileSync(path.join(temp.directory, "stdout.log"), "utf8"), /handoff-out/);
+    assert.doesNotMatch(fs.readFileSync(path.join(temp.directory, "stderr.log"), "utf8"), /handoff-err/);
+  } finally { await terminateChild(child); await rlog.close(); temp.cleanup(); }
+});
+
+test("Process Capture drain excludes post-abort output from partial bytes, lines, and hashes", async () => {
+  const temp = temporaryDirectory();
+  const child = spawnOutputPump();
+  const rlog = createRlog({ screenOutput: "none" });
+  try {
+    const stdoutFile = path.join(temp.directory, "stdout.log");
+    const stderrFile = path.join(temp.directory, "stderr.log");
+    const capture = rlog.capture.processHandle(child, { stdoutFile, stderrFile, stdoutDisplay: "none", stderrDisplay: "none", computeSha256: true });
+    await waitForMessage(child, "ready");
+    await capture.flush();
+    let error;
+    try { await capture.abort(); } catch (reason) { error = reason; }
+    assert.equal(error.code, "CAPTURE_ABORTED");
+    child.send("pump");
+    await waitForMessage(child, "pumped");
+    const expectedOut = "accepted-out\n";
+    const expectedErr = "accepted-err\n";
+    assert.equal(error.partialResult.stdoutBytes, Buffer.byteLength(expectedOut));
+    assert.equal(error.partialResult.stderrBytes, Buffer.byteLength(expectedErr));
+    assert.equal(error.partialResult.stdoutLines, 1);
+    assert.equal(error.partialResult.stderrLines, 1);
+    assert.equal(error.partialResult.stdoutSha256, createHash("sha256").update(expectedOut).digest("hex"));
+    assert.equal(error.partialResult.stderrSha256, createHash("sha256").update(expectedErr).digest("hex"));
+    assert.equal(fs.readFileSync(stdoutFile, "utf8"), expectedOut);
+    assert.equal(fs.readFileSync(stderrFile, "utf8"), expectedErr);
+  } finally { await terminateChild(child); await rlog.close(); temp.cleanup(); }
 });
 
 test("Binary Capture drains a paused Readable buffer before logger close", async () => {

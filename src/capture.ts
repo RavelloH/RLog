@@ -425,7 +425,7 @@ class ProcessCapture implements ProcessCaptureHandle {
   private readonly errorListener: (error: Error) => void;
   private readonly abortListener: () => void;
 
-  constructor(private readonly child: ChildProcess, private readonly options: Required<Pick<ProcessCaptureOptions, "preserveRawBytes" | "stripAnsiInFiles" | "encoding" | "computeSha256">> & ProcessCaptureOptions, private readonly dispatcher: Dispatcher, binding: CaptureLoggerBinding) {
+  constructor(private readonly child: ChildProcess, private readonly options: Required<Pick<ProcessCaptureOptions, "preserveRawBytes" | "stripAnsiInFiles" | "encoding" | "computeSha256" | "detachMode">> & ProcessCaptureOptions, private readonly dispatcher: Dispatcher, binding: CaptureLoggerBinding) {
     this.done = new Promise<ProcessCaptureResult>((resolve, reject) => { this.resolve = resolve; this.reject = reject; });
     void this.done.catch(() => undefined);
     const failChannel = (channel: "stdout" | "stderr", error: CaptureError) => { void this.fail(this.withChannel(error, channel)); };
@@ -491,12 +491,16 @@ class ProcessChannel {
   private accepting = true;
   private readonly dataListener: (chunk: Buffer | string) => void;
   private readonly errorListener: (error: Error) => void;
+  private readonly drainListener = (_chunk: Buffer | string): void => undefined;
+  private readonly drainEndListener = (): void => this.stopDraining();
+  private readonly drainErrorListener = (): void => this.stopDraining();
+  private draining = false;
 
   constructor(
     private readonly channel: "stdout" | "stderr",
     private readonly source: Readable | null,
     private readonly filePath: string | undefined,
-    private readonly options: Required<Pick<ProcessCaptureOptions, "preserveRawBytes" | "stripAnsiInFiles" | "encoding" | "computeSha256">> & ProcessCaptureOptions,
+    private readonly options: Required<Pick<ProcessCaptureOptions, "preserveRawBytes" | "stripAnsiInFiles" | "encoding" | "computeSha256" | "detachMode">> & ProcessCaptureOptions,
     private readonly displayLevel: CaptureDisplayLevel,
     private readonly dispatcher: Dispatcher,
     private readonly binding: CaptureLoggerBinding,
@@ -552,12 +556,36 @@ class ProcessChannel {
   }
   private async writeFile(value: Buffer): Promise<void> { if (!this.file || !this.filePath || !value.length) return; this.hash?.update(value); await this.file.write(this.filePath, value, this.fileMode); }
   async flush(): Promise<void> { await this.work; await this.file?.flush(); }
-  async finish(): Promise<void> { this.accepting = false; this.detach(); const rest = this.decoder.end(); this.enqueue(Buffer.byteLength(rest, this.options.encoding), async () => { if (rest && this.filePath && !this.options.preserveRawBytes) await this.writeFile(Buffer.from(this.options.stripAnsiInFiles ? this.dispatcher.toolkit.stripAnsi(rest) : rest, this.options.encoding)); await this.processLines(rest, true, new Date()); }); await this.work; await this.file?.close(); }
-  async abort(): Promise<void> { this.accepting = false; this.detach(); await this.work; await this.file?.close(); }
+  async finish(): Promise<void> { this.accepting = false; this.detachForCompletion(); const rest = this.decoder.end(); this.enqueue(Buffer.byteLength(rest, this.options.encoding), async () => { if (rest && this.filePath && !this.options.preserveRawBytes) await this.writeFile(Buffer.from(this.options.stripAnsiInFiles ? this.dispatcher.toolkit.stripAnsi(rest) : rest, this.options.encoding)); await this.processLines(rest, true, new Date()); }); await this.work; await this.file?.close(); }
+  async abort(): Promise<void> { this.accepting = false; this.detachAfterAbort(); await this.work; await this.file?.close(); }
   digest(): string | undefined { return this.hash?.digest("hex"); }
   snapshotDigest(): string | undefined { return this.hash?.copy().digest("hex"); }
   private makeError(code: CaptureErrorCode, cause: Error, reason: CaptureEndReason): CaptureError { return new CaptureError(code, cause.message, { reason, startedAt: new Date(0), endedAt: new Date(), durationMs: 0, bytes: this.bytes, file: this.filePath, failedChannel: this.channel }, cause); }
-  private detach(): void { this.source?.removeListener("data", this.dataListener); this.source?.removeListener("error", this.errorListener); if (!this.source?.destroyed) this.source?.pause(); }
+  private detachForCompletion(): void { this.removeCaptureListeners(); if (!this.source?.destroyed) this.source?.pause(); }
+  private detachAfterAbort(): void {
+    this.removeCaptureListeners();
+    if (!this.source || this.source.destroyed) return;
+    if (this.options.detachMode === "pause") { this.source.pause(); return; }
+    if (this.options.detachMode === "drain") this.startDraining();
+  }
+  private removeCaptureListeners(): void { this.source?.removeListener("data", this.dataListener); this.source?.removeListener("error", this.errorListener); }
+  private startDraining(): void {
+    if (!this.source || this.draining || this.source.destroyed || this.source.readableEnded || this.source.closed) return;
+    this.draining = true;
+    this.source.on("data", this.drainListener);
+    this.source.once("end", this.drainEndListener);
+    this.source.once("close", this.drainEndListener);
+    this.source.once("error", this.drainErrorListener);
+    this.source.resume();
+  }
+  private stopDraining(): void {
+    if (!this.source || !this.draining) return;
+    this.draining = false;
+    this.source.removeListener("data", this.drainListener);
+    this.source.removeListener("end", this.drainEndListener);
+    this.source.removeListener("close", this.drainEndListener);
+    this.source.removeListener("error", this.drainErrorListener);
+  }
 }
 
 function takePrefix(text: string, maxBytes: number): string {
@@ -582,6 +610,6 @@ export class CaptureManager {
   binary(source: Readable, options: BinaryCaptureOptions): BinaryStreamCaptureHandle { return new BinaryCapture(source, { computeSha256: true, ...options }, this.dispatcher); }
   process(child: ChildProcess, options: ProcessCaptureOptions, binding: CaptureLoggerBinding): Promise<ProcessCaptureResult> { return this.processHandle(child, options, binding).done; }
   processHandle(child: ChildProcess, options: ProcessCaptureOptions, binding: CaptureLoggerBinding): ProcessCaptureHandle {
-    return new ProcessCapture(child, { preserveRawBytes: false, stripAnsiInFiles: true, encoding: "utf8", computeSha256: false, ...options }, this.dispatcher, binding);
+    return new ProcessCapture(child, { preserveRawBytes: false, stripAnsiInFiles: true, encoding: "utf8", computeSha256: false, detachMode: "drain", ...options }, this.dispatcher, binding);
   }
 }

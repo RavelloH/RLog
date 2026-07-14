@@ -57,9 +57,10 @@ npm run test:coverage
 - 文件操作必须经过受控的串行队列；`flush()` 与 `close()` 必须等待此前写入和轮转。
 - Windows 上必须先关闭文件流再重命名。轮转测试不得因操作系统而跳过。
 - 文件错误须遵循 `fileErrorPolicy`，且不能让一个失败目标阻断其他目标。
-- Capture 不拥有调用者的子进程；关闭 Logger 或 Capture 默认不能杀死被捕获进程。
+- Capture 不拥有调用者的子进程；关闭 Logger 或 Capture 默认不能杀死被捕获进程。Process Capture 停止后默认 `detachMode: "drain"`，必须持续安全消费 stdout/stderr 而不访问已关闭的 Logger；`pause` 与 `handoff` 是调用方明确承担 pipe 消费责任的 opt-in。
 - Capture 需要正确处理 UTF-8 跨 chunk、未换行尾行、背压、长行上限、取消和已接受队列的收尾。
 - 慢 Writable、回调错误与 `error` 事件不能产生未处理 rejection、未处理 error 或 listener 泄漏。
+- `progressTask()` 必须遵守根、screen、text、jsonl facade 的 target 路由；text 只记录既定生命周期节点，JSONL 事件和 Child Logger context 是机器消费者契约。
 
 对这些区域的改动应补充相应回归测试，并在 Windows 兼容路径、并发写入或关闭竞态上至少覆盖一种边界情况。
 

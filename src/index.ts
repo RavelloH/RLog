@@ -74,31 +74,41 @@ class LogSpanImpl implements LogSpan {
 class ProgressTaskImpl implements ProgressTask {
   private current: number;
   private done = false;
-  private readonly jsonl: TargetLogger;
-  constructor(private readonly owner: Rlog, private readonly target: TargetLogger, private readonly options: ProgressTaskOptions) {
+  constructor(private readonly owner: Rlog, private readonly targets: LogTargets, private readonly options: ProgressTaskOptions) {
     this.current = options.current ?? 0;
-    this.jsonl = new TargetLogger(owner, new Set<LogTarget>(["jsonl"]));
-    this.jsonl.event("progress.started", { label: options.label, current: this.current, total: options.total });
-    this.owner.progress(this.current, this.options.total);
+    this.emitJsonl("progress.started", { label: options.label, current: this.current, total: this.options.total });
+    this.emitText("info", `${options.label}: started (${this.current}/${options.total})`);
+    this.emitScreenProgress(this.current);
   }
   update(current: number): void {
     if (this.done) return;
     this.current = current;
-    this.owner.progress(current, this.options.total);
-    this.jsonl.event("progress.updated", { label: this.options.label, current, total: this.options.total });
+    this.emitScreenProgress(current);
+    this.emitJsonl("progress.updated", { label: this.options.label, current, total: this.options.total });
   }
   complete(data?: LogMetadata): void {
     if (this.done) return;
     this.done = true;
-    this.owner.progress(this.options.total, this.options.total);
-    this.target.success(`${this.options.label}: complete`);
-    this.jsonl.event("progress.completed", { label: this.options.label, current: this.options.total, total: this.options.total, ...(data ?? {}) });
+    this.emitScreenProgress(this.options.total);
+    this.emitText("success", `${this.options.label}: complete`);
+    this.emitJsonl("progress.completed", { label: this.options.label, current: this.options.total, total: this.options.total, ...(data ?? {}) });
   }
   fail(reason?: unknown, data?: LogMetadata): void {
     if (this.done) return;
     this.done = true;
-    this.target.error(`${this.options.label}: failed`, reason ?? "");
-    this.jsonl.event("progress.failed", { label: this.options.label, current: this.current, total: this.options.total, ...(data ?? {}), reason: reason instanceof Error ? reason.message : reason }, { level: "error" });
+    if (this.hasTarget("screen")) this.owner.writeToTargets("error", [`${this.options.label}: failed`, reason ?? ""], new Set<LogTarget>(["screen"]));
+    this.emitText("error", `${this.options.label}: failed`, reason);
+    this.emitJsonl("progress.failed", { label: this.options.label, current: this.current, total: this.options.total, ...(data ?? {}), reason: reason instanceof Error ? reason.message : reason }, "error");
+  }
+  private hasTarget(target: LogTarget): boolean { return this.targets === "all" || this.targets.has(target); }
+  private emitScreenProgress(current: number): void { if (this.hasTarget("screen")) this.owner.progress(current, this.options.total); }
+  private emitText(level: LogLevelInput, message: string, reason?: unknown): void {
+    if (this.hasTarget("text")) this.owner.writeToTargets(level, reason === undefined ? [message] : [message, reason], new Set<LogTarget>(["text"]));
+  }
+  private emitJsonl(type: string, data: LogMetadata, level: LogLevelInput = "info"): void {
+    if (!this.hasTarget("jsonl")) return;
+    const entry = this.owner.writeToTargets(level, [type], new Set<LogTarget>(["jsonl"]));
+    (entry as LogEntryImpl).setEvent(type, data);
   }
 }
 
@@ -268,7 +278,7 @@ export default class Rlog {
   }
   progressTaskForTargets(targets: LogTargets, options: ProgressTaskOptions): ProgressTask {
     if (!options.label || !Number.isFinite(options.total) || options.total <= 0) throw new Error("progressTask requires a non-empty label and positive finite total");
-    return new ProgressTaskImpl(this, new TargetLogger(this, targets), options);
+    return new ProgressTaskImpl(this, targets, options);
   }
   private captureBinding(): CaptureLoggerBinding {
     return {

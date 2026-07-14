@@ -125,10 +125,12 @@ export interface LogSpan {
 export interface ProgressTaskOptions {
   label: string;
   total: number;
+  /** Initial value rendered to the screen target and included in progress.started. */
   current?: number;
 }
 
 export interface ProgressTask {
+  /** Updates screen progress and JSONL only; text records lifecycle milestones, not every update. */
   update(current: number): void;
   complete(data?: LogMetadata): void;
   fail(reason?: unknown, data?: LogMetadata): void;
@@ -289,7 +291,15 @@ export interface ProcessCaptureOptions extends CaptureBaseOptions {
   /** Opt in only: process ownership remains with the caller by default. */
   killProcessOnAbort?: boolean;
   killSignal?: NodeJS.Signals;
+  /**
+   * How stdout/stderr are treated after Capture stops. Defaults to drain so a
+   * still-running caller-owned child cannot block on a full pipe.
+   */
+  detachMode?: ProcessCaptureDetachMode;
 }
+
+/** Strategy for a caller-owned process's stdout/stderr after Process Capture stops. */
+export type ProcessCaptureDetachMode = "drain" | "pause" | "handoff";
 
 export interface StreamCaptureOptions extends CaptureBaseOptions {
   file?: string;

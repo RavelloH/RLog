@@ -370,7 +370,17 @@ try {
 }
 ```
 
-关闭 Logger 会使活动 Capture settle，但不会杀死被捕获的子进程。
+关闭 Logger 会使活动 Process Capture 以 `CAPTURE_ABORTED_BY_LOGGER_CLOSE` settle，但不会杀死被捕获的子进程，也不会等待该子进程退出。Process Capture 停止记录后默认继续 drain 两路 pipe，避免仍在运行的子进程因 pipe 缓冲区写满而间接阻塞。drain 后的数据不会写 Capture 文件、触发回调或镜像，也不会计入结果字节数、行数或 SHA-256。
+
+可用 `detachMode` 明确选择停止 Capture 后 stdout/stderr 的处理方式：
+
+| 值 | 行为 |
+| --- | --- |
+| `"drain"`（默认） | RLog 丢弃并持续消费后续两路输出，直到流结束；不会等待子进程退出。 |
+| `"pause"` | 保留旧行为：停止读取并暂停流。若子进程继续输出，pipe 可能写满并使子进程阻塞。 |
+| `"handoff"` | RLog 移除自身 listener，但不暂停、resume 或 drain；调用方必须立即自行添加 `data` listener 或 `pipe()` 到目标，否则仍可能阻塞。 |
+
+`killProcessOnAbort: true` 仍是唯一会请求终止子进程的显式 opt-in；即使启用它，Capture 也会按 `detachMode` 处理信号送达至进程实际退出期间的剩余输出。
 
 ## 生命周期与退出
 
@@ -413,7 +423,16 @@ await rlog.child({ device: "controller" }).withSpan(
 );
 ```
 
-`progressTask()` 在 screen 上使用现有 progress 输出，同时向 JSONL 写入稳定的 `progress.started`、`progress.updated`、`progress.completed` 和 `progress.failed` 事件：
+`progressTask()` 遵守创建它的 Logger target 范围；Child Logger 的 context 会随 JSONL 事件继承。根 Logger 等同于 all targets：screen 显示进度，text 记录生命周期，JSONL 写稳定的 `progress.started`、`progress.updated`、`progress.completed` 和 `progress.failed` 事件。
+
+| 调用入口 | screen | text | JSONL |
+| --- | --- | --- | --- |
+| `rlog.progressTask()` | 可视进度 | `started`、`completed`、`failed` | 全部四种事件 |
+| `rlog.screen.progressTask()` | 仅可视进度（失败会显示错误） | 不写 | 不写 |
+| `rlog.text.progressTask()` | 不写 | 仅 `started`、`completed`、`failed` | 不写 |
+| `rlog.jsonl.progressTask()` | 不写 | 不写 | 全部四种事件 |
+
+text 不记录每次 `update()`，避免高频任务淹没文本日志。构造时会按范围写入初始 screen 进度；`complete()` 与 `fail()` 幂等，终止后的 `update()` 会被忽略：
 
 ```js
 const progress = rlog.progressTask({ label: "Flashing controller", total: 100 });

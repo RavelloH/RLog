@@ -102,7 +102,26 @@ child.kill();
 await capture.abort("operation-timeout");
 ```
 
-`ProcessCaptureHandle` 提供 `done`、`flush()` 和 `abort()`。除非显式设置 `killProcessOnAbort: true`，`abort()`、`AbortSignal` 和 Logger `close()` 都不会杀死子进程。
+`ProcessCaptureHandle` 提供 `done`、`flush()` 和 `abort()`。除非显式设置 `killProcessOnAbort: true`，`abort()`、`AbortSignal` 和 Logger `close()` 都不会杀死子进程。即使设置了 `killProcessOnAbort`，它也只是请求发送 `killSignal`；直到子进程实际关闭前，后续 stdout/stderr 仍按 `detachMode` 处理。
+
+### 停止后如何处理 stdout/stderr
+
+Capture 不拥有子进程，但也不能在停止读取后默默留下会写满的 pipe。`ProcessCaptureOptions.detachMode` 控制 `abort()`、`AbortSignal`、Capture 失败及 Logger close 后两路流的处理，默认是 `"drain"`：
+
+| 值 | 行为与责任 |
+| --- | --- |
+| `"drain"`（默认） | RLog 停止 Capture 文件、行回调和镜像后，继续读取并丢弃 stdout/stderr，直到各流结束或关闭。它不会杀死子进程，也不会让 `rlog.close()` 等待子进程退出。drain 数据绝不会写文件、触发回调、镜像到 screen/text/JSONL，或增加 `partialResult` 的 bytes、lines、SHA-256。流结束后临时 listener 会自行移除。 |
+| `"pause"` | 显式保留旧行为：移除 Capture listener 并暂停流。若调用方让子进程继续大量输出，OS pipe 可能写满，子进程可能因此阻塞。测试或业务代码必须自行清理该子进程。 |
+| `"handoff"` | RLog 只移除自己的 listener，既不 destroy、pause、resume，也不安装永久 drain listener。调用方可以立即接管并添加 `data` listener 或 `pipe()`；若不负责后续消费，子进程仍可能因 pipe 写满而阻塞。 |
+
+例如，调用方若打算在中止后接管输出：
+
+```js
+const capture = rlog.capture.processHandle(child, { detachMode: "handoff" });
+await capture.abort();
+child.stdout.on("data", consumeStdout);
+child.stderr.on("data", consumeStderr);
+```
 
 ## 路由、上下文与行回调
 
@@ -194,5 +213,5 @@ controller.abort();
 
 - `await rlog.flush()` 等待已排队日志和活动 Capture 当前已接收的数据，之后 Logger 仍可继续使用。
 - `await rlog.close()` 拒绝新的用户日志，要求 Capture 收尾，等待屏幕/文件/轮转并关闭 Sink。
-- Logger `close()` 不杀死被 Capture 的子进程。
+- Logger `close()` 不杀死被 Capture 的子进程。活动 Process Capture 的 `done` 会以 `CAPTURE_ABORTED_BY_LOGGER_CLOSE` 拒绝，并使用其 `detachMode`；默认 drain 在后台轻量消费 pipe，但不会访问已关闭的 Logger、Sink 或 Dispatcher，也不会让 `close()` 等待长期运行的子进程。
 - 失败 Capture 在 `done` settle 前会先等待已接受队列停止，之后不会继续留下后台文件写入。
