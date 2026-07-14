@@ -17,6 +17,7 @@ export class Dispatcher {
   private scheduled = false;
   private sequence = 0;
   private readonly errors: Error[] = [];
+  private readonly reportedFileErrors = new WeakSet<Error>();
   private closePromise: Promise<void> | undefined;
   private readonly captures = new Set<{ closeForLogger(): Promise<void>; flush(): Promise<void> }>();
 
@@ -38,7 +39,7 @@ export class Dispatcher {
     // microtask for a chained .meta() call.
     if (this.config.screenMetadataOutput === "none" && record.destination !== "file") {
       record.screenWritten = true;
-      void this.console.write(record).catch((reason: unknown) => this.captureError(toError(reason)));
+      void this.console.write(record).catch((reason: unknown) => this.pushDeferredError(toError(reason)));
     }
     this.pending.push(record);
     if (!this.scheduled) {
@@ -52,7 +53,8 @@ export class Dispatcher {
     for (const record of records) {
       record.committed = true;
       this.work = this.work.then(() => this.dispatch(record)).catch((reason: unknown) => {
-        this.captureError(toError(reason));
+        const error = toError(reason);
+        if (!this.reportedFileErrors.has(error)) this.pushDeferredError(error);
       });
     }
   }
@@ -64,12 +66,17 @@ export class Dispatcher {
   }
 
   reportFileError(error: Error, context: FileErrorContext): void {
-    try { this.config.onFileError?.(error, context); } catch (callbackError) { this.captureError(toError(callbackError)); }
+    this.reportedFileErrors.add(error);
+    try { this.config.onFileError?.(error, context); } catch (callbackError) { this.pushDeferredError(toError(callbackError)); }
     if (this.config.fileErrorPolicy === "stderr") process.stderr.write(`RLog file error (${context.operation}, ${context.output}): ${error.message}\n`);
-    if (this.config.fileErrorPolicy === "throw") this.captureError(error);
+    if (this.config.fileErrorPolicy === "throw") this.pushDeferredError(error);
   }
 
-  private captureError(error: Error): void {
+  private captureFileError(error: Error): void {
+    if (this.config.fileErrorPolicy === "throw") this.pushDeferredError(error);
+  }
+
+  private pushDeferredError(error: Error): void {
     if (!this.errors.includes(error)) this.errors.push(error);
   }
 
@@ -81,7 +88,7 @@ export class Dispatcher {
       this.text.file.flush(),
       this.jsonl.file.flush(),
     ]);
-    for (const outcome of outcomes) if (outcome.status === "rejected" && this.config.fileErrorPolicy === "throw") this.captureError(toError(outcome.reason));
+    for (const outcome of outcomes) if (outcome.status === "rejected") this.captureFileError(toError(outcome.reason));
     this.throwDeferredErrors();
   }
 
@@ -95,11 +102,11 @@ export class Dispatcher {
     if (this.state === "closed") return;
     this.state = "closing";
     const captures = await Promise.allSettled([...this.captures].map((capture) => capture.closeForLogger()));
-    for (const outcome of captures) if (outcome.status === "rejected" && this.config.fileErrorPolicy === "throw") this.captureError(toError(outcome.reason));
+    for (const outcome of captures) if (outcome.status === "rejected") this.captureFileError(toError(outcome.reason));
     this.commitPending();
     await this.work;
     const outcomes = await Promise.allSettled([this.text.file.close(), this.jsonl.file.close()]);
-    for (const outcome of outcomes) if (outcome.status === "rejected" && this.config.fileErrorPolicy === "throw") this.captureError(toError(outcome.reason));
+    for (const outcome of outcomes) if (outcome.status === "rejected") this.captureFileError(toError(outcome.reason));
     this.state = "closed";
     this.throwDeferredErrors();
   }
@@ -109,7 +116,7 @@ export class Dispatcher {
   removeCapture(capture: { closeForLogger(): Promise<void>; flush(): Promise<void> }): void { this.captures.delete(capture); }
 
   private throwDeferredErrors(): void {
-    if (this.config.fileErrorPolicy !== "throw" || !this.errors.length) return;
+    if (!this.errors.length) return;
     const errors = this.errors.splice(0);
     if (errors.length === 1) throw errors[0];
     const combined = new Error(`RLog encountered ${errors.length} file write errors: ${errors.map((error) => error.message).join("; ")}`);

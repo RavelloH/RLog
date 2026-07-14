@@ -852,6 +852,32 @@ async function runV22() {
     assert.strictEqual(records[1].event.data.durationMs, 42);
     assert.match(text, /durationMs: 42/, "event data is rendered with text metadata");
 
+    const redactionTextFile = path.join(tempDir, "error-redaction.log");
+    const redactionJsonlFile = path.join(tempDir, "error-redaction.jsonl");
+    let redactionScreen = "";
+    const redactionTarget = new (require("stream").Writable)({ write(chunk, _encoding, callback) { redactionScreen += chunk.toString(); callback(); } });
+    const nestedError = Object.assign(new Error("nested"), { token: "nested-secret" });
+    const structuredError = Object.assign(new Error("failed"), { token: "top-secret", authorization: "Bearer secret-token", cause: nestedError });
+    nestedError.cause = structuredError;
+    const redactionRlog = new Rlog({ autoInit: false, silent: true, enableColorfulOutput: false, screenOutput: redactionTarget, screenMetadataOutput: "block", logFilePath: redactionTextFile, jsonlFilePath: redactionJsonlFile, redactKeys: ["token", "authorization"] });
+    redactionRlog.error("request failed").meta({ error: structuredError });
+    redactionRlog.event("operation.failed", { error: structuredError });
+    redactionRlog.child({ error: structuredError }).info("child error context");
+    await redactionRlog.close();
+    const redactionText = fs.readFileSync(redactionTextFile, "utf8");
+    for (const secret of ["top-secret", "nested-secret", "Bearer secret-token"]) {
+      assert.doesNotMatch(redactionText, new RegExp(secret), "text metadata redacts Error custom fields");
+      assert.doesNotMatch(redactionScreen, new RegExp(secret), "screen metadata redacts Error custom fields");
+    }
+    assert.match(redactionText, /\[REDACTED\]/, "text metadata preserves redaction markers");
+    const redactionRecords = fs.readFileSync(redactionJsonlFile, "utf8").trim().split(/\r?\n/).map((line) => JSON.parse(line));
+    assert.strictEqual(redactionRecords[0].meta.error.token, "[REDACTED]");
+    assert.strictEqual(redactionRecords[0].meta.error.authorization, "[REDACTED]");
+    assert.strictEqual(redactionRecords[0].meta.error.cause.token, "[REDACTED]");
+    assert.strictEqual(redactionRecords[0].meta.error.cause.cause, "[Circular]");
+    assert.strictEqual(redactionRecords[1].event.data.error.cause.token, "[REDACTED]");
+    assert.strictEqual(redactionRecords[2].context.error.token, "[REDACTED]");
+
     const lateEntryRlog = new Rlog({ autoInit: false, silent: true, screenOutput: "none" });
     const lateEntry = lateEntryRlog.info("late metadata");
     await lateEntryRlog.flush();
@@ -914,6 +940,21 @@ async function runV22() {
     }
     process.argv = originalArgv;
 
+    for (const invalidLevel of ["constructor", "toString", "valueOf", "hasOwnProperty", "__proto__", "prototype"]) {
+      assert.throws(() => new Rlog({ autoInit: false, silent: true, screenOutput: "none", logLevel: invalidLevel }), /Invalid RLog level/, `${invalidLevel} is not a valid own log level`);
+    }
+    process.argv = [originalArgv[0], originalArgv[1], "--log-level=constructor"];
+    const invalidArgvLevel = new Rlog({ autoInit: false, silent: true, screenOutput: "none", readLogLevelFromArgv: true });
+    assert.throws(() => invalidArgvLevel.config.effectiveLevel("screen"), /Invalid RLog level/);
+    await invalidArgvLevel.close();
+    process.argv = originalArgv;
+    process.env.RLOG_LEVEL = "toString";
+    const invalidEnvLevel = new Rlog({ autoInit: false, silent: true, screenOutput: "none", readLogLevelFromEnv: true });
+    assert.throws(() => invalidEnvLevel.config.effectiveLevel("screen"), /Invalid RLog level/);
+    await invalidEnvLevel.close();
+    if (originalEnv === undefined) delete process.env.RLOG_LEVEL;
+    else process.env.RLOG_LEVEL = originalEnv;
+
     const captureRlog = new Rlog({ autoInit: false, silent: true, screenOutput: "none" });
     const streamCapture = captureRlog.capture.stream(Readable.from([Buffer.from("a\n"), Buffer.from([0xe4, 0xb8]), Buffer.from([0xad, 0x0a])]), { file: path.join(tempDir, "stream.log"), computeSha256: true });
     const streamResult = await streamCapture.done;
@@ -958,29 +999,54 @@ async function runV22() {
       promise,
       new Promise((_, reject) => setTimeout(() => reject(new Error(`${label} timed out`)), 1000)),
     ]);
+    const assertCaptureReleased = async (promise, expectedError, releaseDir, label) => {
+      await assert.rejects(captureTimeout(promise, label), expectedError);
+      fs.rmSync(releaseDir, { recursive: true, force: false });
+    };
     const sourceErrorRlog = new Rlog({ autoInit: false, silent: true, screenOutput: "none", fileErrorPolicy: "ignore" });
     const sourceError = new Readable({ read() { this.destroy(new Error("capture source failed")); } });
     const sourceHandle = sourceErrorRlog.capture.stream(sourceError, { file: path.join(tempDir, "source-error.log") });
     await assert.rejects(captureTimeout(sourceHandle.done, "source capture"), (error) => error && error.code === "CAPTURE_SOURCE_ERROR" && error.partialResult.reason === "error");
     await sourceErrorRlog.close();
 
+    const textFailureDir = path.join(tempDir, "text-failure");
+    const textFailureTarget = path.join(textFailureDir, "target");
+    fs.mkdirSync(textFailureTarget, { recursive: true });
     const textFailureRlog = new Rlog({ autoInit: false, silent: true, screenOutput: "none", fileErrorPolicy: "ignore" });
-    const textFailure = textFailureRlog.capture.stream(Readable.from(["text failure\n"]), { file: tempDir });
-    await assert.rejects(captureTimeout(textFailure.done, "text file capture"), (error) => error && error.code === "CAPTURE_FILE_ERROR" && error.partialResult.reason === "error");
+    const textFailure = textFailureRlog.capture.stream(Readable.from(["text failure\n"]), { file: textFailureTarget });
+    await assertCaptureReleased(textFailure.done, (error) => error && error.code === "CAPTURE_FILE_ERROR" && error.partialResult.reason === "error", textFailureDir, "text file capture");
     await textFailureRlog.close();
 
+    const binaryFailureDir = path.join(tempDir, "binary-failure");
+    const binaryFailureTarget = path.join(binaryFailureDir, "target");
+    fs.mkdirSync(binaryFailureTarget, { recursive: true });
     const binaryFailureRlog = new Rlog({ autoInit: false, silent: true, screenOutput: "none", fileErrorPolicy: "ignore" });
-    const binaryFailure = binaryFailureRlog.capture.binary(Readable.from([Buffer.from("binary failure")]), { file: tempDir });
-    await assert.rejects(captureTimeout(binaryFailure.done, "binary file capture"), (error) => error && error.code === "CAPTURE_FILE_ERROR" && error.partialResult.reason === "error");
+    const binaryFailure = binaryFailureRlog.capture.binary(Readable.from([Buffer.from("binary failure")]), { file: binaryFailureTarget });
+    await assertCaptureReleased(binaryFailure.done, (error) => error && error.code === "CAPTURE_FILE_ERROR" && error.partialResult.reason === "error", binaryFailureDir, "binary file capture");
     await binaryFailureRlog.close();
 
+    const processFailureDir = path.join(tempDir, "process-failure");
+    const processFailureTarget = path.join(processFailureDir, "target");
+    fs.mkdirSync(processFailureTarget, { recursive: true });
     const processFailureRlog = new Rlog({ autoInit: false, silent: true, screenOutput: "none", fileErrorPolicy: "ignore" });
     const failingChild = spawn(process.execPath, ["-e", "process.stdout.write('first\\n'); setInterval(() => {}, 1000)"]);
-    const failingProcess = processFailureRlog.capture.process(failingChild, { stdoutFile: tempDir });
-    await assert.rejects(captureTimeout(failingProcess, "process file capture"), (error) => error && error.code === "CAPTURE_FILE_ERROR" && error.partialResult.reason === "error");
+    const failingProcess = processFailureRlog.capture.process(failingChild, { stdoutFile: processFailureTarget });
+    await assertCaptureReleased(failingProcess, (error) => error && error.code === "CAPTURE_FILE_ERROR" && error.partialResult.reason === "error", processFailureDir, "process file capture");
     assert.strictEqual(failingChild.exitCode, null, "process file capture failure does not terminate the child");
     await processFailureRlog.close();
     failingChild.kill();
+
+    const loggerCloseDir = path.join(tempDir, "logger-close-release");
+    const loggerCloseFile = path.join(loggerCloseDir, "stdout.log");
+    fs.mkdirSync(loggerCloseDir, { recursive: true });
+    const loggerCloseRlog = new Rlog({ autoInit: false, silent: true, screenOutput: "none" });
+    const loggerCloseChild = spawn(process.execPath, ["-e", "setInterval(() => process.stdout.write('line\\n'), 5)"]);
+    const loggerClosePromise = loggerCloseRlog.capture.process(loggerCloseChild, { stdoutFile: loggerCloseFile });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    await loggerCloseRlog.close();
+    await assertCaptureReleased(loggerClosePromise, (error) => error && error.code === "CAPTURE_ABORTED_BY_LOGGER_CLOSE" && error.partialResult.reason === "logger-close", loggerCloseDir, "logger close capture");
+    assert.strictEqual(loggerCloseChild.exitCode, null, "logger-close cleanup does not kill the child");
+    loggerCloseChild.kill();
 
     let fileErrorCalls = 0;
     const failingRlog = new Rlog({ autoInit: false, silent: true, screenOutput: "none", logFilePath: tempDir, fileErrorPolicy: "throw", onFileError() { fileErrorCalls += 1; } });
@@ -994,6 +1060,22 @@ async function runV22() {
       await tolerant.flush();
       await tolerant.close();
     }
+
+    const historicalErrorDir = path.join(tempDir, "historical-error");
+    fs.mkdirSync(historicalErrorDir, { recursive: true });
+    const historicalErrorRlog = new Rlog({ autoInit: false, silent: true, screenOutput: "none", logFilePath: historicalErrorDir, fileErrorPolicy: "ignore" });
+    historicalErrorRlog.info("ignored error");
+    await historicalErrorRlog.flush();
+    historicalErrorRlog.config.setConfig({ fileErrorPolicy: "throw" });
+    await historicalErrorRlog.flush();
+    historicalErrorRlog.config.setConfig({ fileErrorPolicy: "ignore" });
+    await historicalErrorRlog.close();
+
+    const callbackErrorDir = path.join(tempDir, "callback-error");
+    fs.mkdirSync(callbackErrorDir, { recursive: true });
+    const callbackErrorRlog = new Rlog({ autoInit: false, silent: true, screenOutput: "none", logFilePath: callbackErrorDir, fileErrorPolicy: "ignore", onFileError() { throw new Error("callback failed"); } });
+    callbackErrorRlog.info("callback error");
+    await assert.rejects(callbackErrorRlog.close(), /callback failed/, "onFileError callback failures are delivered even for ignore");
 
     for (const policy of ["throw", "disable", "stderr", "ignore"]) {
       const flushFile = path.join(tempDir, `flush-${policy}.log`);

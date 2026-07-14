@@ -245,7 +245,7 @@ rlog
   .meta({ port: "COM9", token: "secret" });
 ```
 
-screen 默认不显示 metadata；文本文件默认以块显示；JSONL 总是保存分离的 `context` 与 `meta`。JSONL 会安全处理 `BigInt`、`Date`、`Error`、`Buffer`、`undefined`、`Symbol`、函数与循环引用。
+screen 默认不显示 metadata；文本文件默认以块显示；JSONL 总是保存分离的 `context` 与 `meta`。JSONL 会安全处理 `BigInt`、`Date`、`Error`、`Buffer`、`undefined`、`Symbol`、函数与循环引用。`redactKeys` 会递归处理普通对象、数组、`Error` 的自定义字段和 `Error.cause`；不会修改原始对象。
 
 ### Child logger 与事件
 
@@ -297,7 +297,7 @@ const binary = rlog.capture.binary(binaryStream, {
 });
 ```
 
-capture 使用增量写入，不会将整个流载入内存。binary 默认计算 SHA-256。capture 原始文件不会自动脱敏，请自行保护敏感数据。根 logger 在子进程结束前关闭时，会停止捕获并关闭 capture 文件，但不会 kill 子进程；对应 Promise 会以 `CaptureError` reject。
+capture 使用增量写入，不会将整个流载入内存。binary 默认计算 SHA-256。`done` Promise 无论 resolve 或 reject，均表示 RLog 为该 capture 创建的文件资源已完成清理；因此完成后可立即读取或删除这些文件。capture 原始文件不会自动脱敏，请自行保护敏感数据。根 logger 在子进程结束前关闭时，会停止捕获并关闭 capture 文件，但不会 kill 子进程；对应 Promise 会以 `CaptureError` reject。
 
 ### 文件错误策略
 
@@ -310,7 +310,7 @@ new Rlog({
 });
 ```
 
-普通日志调用不会同步抛出稍后发生的文件错误；在 `throw` 策略下，`flush()` 与 `close()` 会交付该错误。其他策略会禁用失败目标，让其余输出继续工作。
+普通日志调用不会同步抛出稍后发生的文件错误；在 `throw` 策略下，`flush()` 与 `close()` 会交付该错误。错误发生当时的策略决定是否进入后续的错误交付队列，因此后来将 `ignore` 或 `disable` 改为 `throw` 不会重新抛出历史错误。`onFileError` 自身抛出的异常始终会由后续 `flush()` 或 `close()` 交付。其他策略会禁用失败目标，让其余输出继续工作。
 
 ## 接口
 

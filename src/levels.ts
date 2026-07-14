@@ -16,7 +16,7 @@ const priorities: Record<LogLevel, number> = {
 export function normalizeLevel(value: LogLevelInput | undefined, fallback: LogLevel = "info"): LogLevel {
   if (value === undefined) return fallback;
   const normalized = value === "warning" ? "warn" : value;
-  if (!(normalized in priorities)) throw new Error(`Invalid RLog level: ${String(value)}`);
+  if (!Object.prototype.hasOwnProperty.call(priorities, normalized)) throw new Error(`Invalid RLog level: ${String(value)}`);
   return normalized;
 }
 

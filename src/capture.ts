@@ -27,6 +27,7 @@ class TextCapture implements TextStreamCaptureHandle {
   private readonly hash: Hash | undefined;
   private readonly displayLevel: CaptureDisplayLevel;
   private state: CaptureState = "active";
+  private failurePromise: Promise<void> | undefined;
   private work: Promise<void> = Promise.resolve();
   private bytes = 0;
   private chunks = 0;
@@ -48,13 +49,20 @@ class TextCapture implements TextStreamCaptureHandle {
     this.dataListener = (chunk) => this.receive(chunk);
     this.endListener = () => { void this.finish("end"); };
     this.closeListener = () => { void this.finish("end"); };
-    this.errorListener = (error) => this.settleFailure(this.makeError("CAPTURE_SOURCE_ERROR", error, "error"));
+    this.errorListener = (error) => { void this.fail(this.makeError("CAPTURE_SOURCE_ERROR", error, "error")); };
     source.on("data", this.dataListener); source.once("end", this.endListener); source.once("close", this.closeListener); source.once("error", this.errorListener);
     dispatcher.addCapture(this);
   }
 
   mark(label: string, metadata?: Record<string, unknown>): void { this.event("capture.mark", { label, ...(metadata ?? {}) }); }
-  async flush(): Promise<void> { await this.work; await this.output?.flush(); }
+  async flush(): Promise<void> {
+    try { await this.work; await this.output?.flush(); }
+    catch (reason) {
+      const error = toError(reason);
+      await this.fail(this.makeError("CAPTURE_FILE_ERROR", error, "error"));
+      throw error;
+    }
+  }
   async close(): Promise<StreamCaptureResult> { await this.finish("manual-close"); return this.done; }
   async closeForLogger(): Promise<void> { await this.finish("logger-close"); }
 
@@ -98,7 +106,7 @@ class TextCapture implements TextStreamCaptureHandle {
     const buffer = Buffer.from(value, this.options.encoding);
     this.hash?.update(buffer);
     this.work = this.work.then(() => this.output!.write(this.options.file!, buffer));
-    void this.work.catch((reason: unknown) => this.settleFailure(this.makeError("CAPTURE_FILE_ERROR", toError(reason), "error")));
+    void this.work.catch((reason: unknown) => this.fail(this.makeError("CAPTURE_FILE_ERROR", toError(reason), "error")));
   }
 
   private async finish(reason: "end" | "manual-close" | "logger-close"): Promise<void> {
@@ -112,9 +120,10 @@ class TextCapture implements TextStreamCaptureHandle {
     try {
       await this.flush();
       await this.output?.close();
+      if (this.failurePromise) return this.failurePromise;
       this.settleSuccess({ ...resultBase(this.startedAt, reason, this.bytes, this.options.file), encoding: this.options.encoding, chunks: this.chunks, lines: this.lines, sha256: this.hash?.digest("hex") });
     } catch (reason) {
-      this.settleFailure(this.makeError("CAPTURE_FILE_ERROR", toError(reason), "error"));
+      await this.fail(this.makeError("CAPTURE_FILE_ERROR", toError(reason), "error"));
     }
   }
 
@@ -128,11 +137,19 @@ class TextCapture implements TextStreamCaptureHandle {
     this.detach(); this.dispatcher.removeCapture(this); this.resolve(result);
   }
 
-  private settleFailure(error: CaptureError): void {
+  private fail(error: CaptureError): Promise<void> {
+    if (!this.failurePromise) this.failurePromise = this.finalizeFailure(error);
+    return this.failurePromise;
+  }
+
+  private async finalizeFailure(error: CaptureError): Promise<void> {
     if (this.state === "settled") return;
+    this.state = "finishing";
+    this.detach();
+    await this.work.catch(() => undefined);
+    await this.output?.close().catch(() => undefined);
+    this.dispatcher.removeCapture(this);
     this.state = "settled";
-    this.detach(); this.dispatcher.removeCapture(this);
-    void this.output?.close().catch(() => undefined);
     this.reject(error);
   }
 
@@ -147,6 +164,7 @@ class BinaryCapture implements BinaryStreamCaptureHandle {
   private readonly output: ManagedFile;
   private readonly hash: Hash | undefined;
   private state: CaptureState = "active";
+  private failurePromise: Promise<void> | undefined;
   private work: Promise<void> = Promise.resolve();
   private bytes = 0;
   private chunks = 0;
@@ -163,12 +181,19 @@ class BinaryCapture implements BinaryStreamCaptureHandle {
     this.dataListener = (chunk) => this.receive(chunk);
     this.endListener = () => { void this.finish("end"); };
     this.closeListener = () => { void this.finish("end"); };
-    this.errorListener = (error) => this.settleFailure(this.makeError("CAPTURE_SOURCE_ERROR", error));
+    this.errorListener = (error) => { void this.fail(this.makeError("CAPTURE_SOURCE_ERROR", error)); };
     source.on("data", this.dataListener); source.once("end", this.endListener); source.once("close", this.closeListener); source.once("error", this.errorListener);
     dispatcher.addCapture(this);
   }
 
-  async flush(): Promise<void> { await this.work; await this.output.flush(); }
+  async flush(): Promise<void> {
+    try { await this.work; await this.output.flush(); }
+    catch (reason) {
+      const error = toError(reason);
+      await this.fail(this.makeError("CAPTURE_FILE_ERROR", error));
+      throw error;
+    }
+  }
   async close(): Promise<BinaryCaptureResult> { await this.finish("manual-close"); return this.done; }
   async closeForLogger(): Promise<void> { await this.finish("logger-close"); }
 
@@ -177,7 +202,7 @@ class BinaryCapture implements BinaryStreamCaptureHandle {
     const data = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
     this.bytes += data.length; this.chunks += 1; this.hash?.update(data);
     this.work = this.work.then(() => this.output.write(this.options.file, data));
-    void this.work.catch((reason: unknown) => this.settleFailure(this.makeError("CAPTURE_FILE_ERROR", toError(reason))));
+    void this.work.catch((reason: unknown) => this.fail(this.makeError("CAPTURE_FILE_ERROR", toError(reason))));
   }
 
   private async finish(reason: "end" | "manual-close" | "logger-close"): Promise<void> {
@@ -187,15 +212,26 @@ class BinaryCapture implements BinaryStreamCaptureHandle {
     try {
       await this.flush();
       await this.output.close();
+      if (this.failurePromise) return this.failurePromise;
       this.settleSuccess({ ...resultBase(this.startedAt, reason, this.bytes, this.options.file), chunks: this.chunks, sha256: this.hash?.digest("hex") });
     } catch (reason) {
-      this.settleFailure(this.makeError("CAPTURE_FILE_ERROR", toError(reason)));
+      await this.fail(this.makeError("CAPTURE_FILE_ERROR", toError(reason)));
     }
   }
 
   private makeError(code: CaptureErrorCode, cause: Error): CaptureError { return new CaptureError(code, cause.message, resultBase(this.startedAt, "error", this.bytes, this.options.file), cause); }
   private settleSuccess(result: BinaryCaptureResult): void { if (this.state === "settled") return; this.state = "settled"; this.detach(); this.dispatcher.removeCapture(this); this.resolve(result); }
-  private settleFailure(error: CaptureError): void { if (this.state === "settled") return; this.state = "settled"; this.detach(); this.dispatcher.removeCapture(this); void this.output.close().catch(() => undefined); this.reject(error); }
+  private fail(error: CaptureError): Promise<void> { if (!this.failurePromise) this.failurePromise = this.finalizeFailure(error); return this.failurePromise; }
+  private async finalizeFailure(error: CaptureError): Promise<void> {
+    if (this.state === "settled") return;
+    this.state = "finishing";
+    this.detach();
+    await this.work.catch(() => undefined);
+    await this.output.close().catch(() => undefined);
+    this.dispatcher.removeCapture(this);
+    this.state = "settled";
+    this.reject(error);
+  }
   private detach(): void { this.source.removeListener("data", this.dataListener); this.source.removeListener("end", this.endListener); this.source.removeListener("close", this.closeListener); this.source.removeListener("error", this.errorListener); if (!this.source.destroyed) this.source.pause(); }
 }
 
@@ -207,17 +243,18 @@ class ProcessCapture {
   private resolve!: (result: ProcessCaptureResult) => void;
   private reject!: (error: CaptureError) => void;
   private state: CaptureState = "active";
+  private failurePromise: Promise<void> | undefined;
   private readonly closeListener: (code: number | null, signal: NodeJS.Signals | null) => void;
   private readonly errorListener: (error: Error) => void;
 
   constructor(private readonly child: ChildProcess, options: Required<Pick<ProcessCaptureOptions, "preserveRawBytes" | "stripAnsiInFiles" | "encoding" | "computeSha256">> & ProcessCaptureOptions, private readonly dispatcher: Dispatcher, display: Display) {
     this.promise = new Promise<ProcessCaptureResult>((resolve, reject) => { this.resolve = resolve; this.reject = reject; });
     void this.promise.catch(() => undefined);
-    const onChannelFailure = (error: Error) => this.settleFailure(this.makeError("CAPTURE_FILE_ERROR", error, "error"));
+    const onChannelFailure = (error: Error) => { void this.fail(this.makeError("CAPTURE_FILE_ERROR", error, "error")); };
     this.stdout = new Channel(child.stdout, options.stdoutFile, options, normalizeCaptureDisplayLevel(options.stdoutDisplay), dispatcher, display, onChannelFailure);
     this.stderr = new Channel(child.stderr, options.stderrFile, options, normalizeCaptureDisplayLevel(options.stderrDisplay), dispatcher, display, onChannelFailure);
     this.closeListener = (code, signal) => { void this.complete(code, signal); };
-    this.errorListener = (error) => this.settleFailure(this.makeError("CAPTURE_SOURCE_ERROR", error, "error"));
+    this.errorListener = (error) => { void this.fail(this.makeError("CAPTURE_SOURCE_ERROR", error, "error")); };
     child.once("close", this.closeListener); child.once("error", this.errorListener); dispatcher.addCapture(this);
   }
 
@@ -226,10 +263,7 @@ class ProcessCapture {
 
   async closeForLogger(): Promise<void> {
     if (this.state !== "active") return this.promise.then(() => undefined, () => undefined);
-    this.state = "finishing";
-    this.detachChild();
-    await Promise.all([this.stdout.abort(), this.stderr.abort()]);
-    this.settleFailure(this.makeError("CAPTURE_ABORTED_BY_LOGGER_CLOSE", new Error("Process capture was aborted because RLog closed"), "logger-close"));
+    await this.fail(this.makeError("CAPTURE_ABORTED_BY_LOGGER_CLOSE", new Error("Process capture was aborted because RLog closed"), "logger-close"));
   }
 
   private async complete(code: number | null, signal: NodeJS.Signals | null): Promise<void> {
@@ -239,10 +273,10 @@ class ProcessCapture {
     try {
       await Promise.all([this.stdout.finish(), this.stderr.finish()]);
       const endedAt = new Date();
+      if (this.failurePromise) return this.failurePromise;
       this.settleSuccess({ exitCode: code, signal, stdoutBytes: this.stdout.bytes, stderrBytes: this.stderr.bytes, stdoutSha256: this.stdout.digest(), stderrSha256: this.stderr.digest(), startedAt: this.startedAt, endedAt, durationMs: endedAt.valueOf() - this.startedAt.valueOf(), reason: "process-close" });
     } catch (reason) {
-      await Promise.all([this.stdout.abort(), this.stderr.abort()]);
-      this.settleFailure(this.makeError("CAPTURE_FILE_ERROR", toError(reason), "error"));
+      await this.fail(this.makeError("CAPTURE_FILE_ERROR", toError(reason), "error"));
     }
   }
 
@@ -251,7 +285,16 @@ class ProcessCapture {
     return new CaptureError(code, cause.message, { reason, startedAt: this.startedAt, endedAt, durationMs: endedAt.valueOf() - this.startedAt.valueOf(), stdoutBytes: this.stdout.bytes, stderrBytes: this.stderr.bytes }, cause);
   }
   private settleSuccess(result: ProcessCaptureResult): void { if (this.state === "settled") return; this.state = "settled"; this.detachChild(); this.dispatcher.removeCapture(this); this.resolve(result); }
-  private settleFailure(error: CaptureError): void { if (this.state === "settled") return; this.state = "settled"; this.detachChild(); this.dispatcher.removeCapture(this); void Promise.all([this.stdout.abort(), this.stderr.abort()]); this.reject(error); }
+  private fail(error: CaptureError): Promise<void> { if (!this.failurePromise) this.failurePromise = this.finalizeFailure(error); return this.failurePromise; }
+  private async finalizeFailure(error: CaptureError): Promise<void> {
+    if (this.state === "settled") return;
+    this.state = "finishing";
+    this.detachChild();
+    await Promise.all([this.stdout.abort(), this.stderr.abort()]);
+    this.dispatcher.removeCapture(this);
+    this.state = "settled";
+    this.reject(error);
+  }
   private detachChild(): void { this.child.removeListener("close", this.closeListener); this.child.removeListener("error", this.errorListener); }
 }
 

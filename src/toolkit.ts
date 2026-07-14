@@ -121,7 +121,15 @@ export class Toolkit {
       if (seen.has(input)) return "[Circular]";
       seen.add(input);
       if (Array.isArray(input)) return input.map((item) => visit(item, undefined, depth + 1));
-      if (input instanceof Date || input instanceof Error || Buffer.isBuffer(input)) return input;
+      if (input instanceof Date || Buffer.isBuffer(input)) return input;
+      if (input instanceof Error) {
+        const result: LogMetadata = { name: input.name, message: input.message, stack: input.stack };
+        if ("cause" in input) result.cause = visit(input.cause, "cause", depth + 1);
+        for (const [entryKey, entryValue] of Object.entries(input)) {
+          if (entryKey !== "cause") result[entryKey] = visit(entryValue, entryKey, depth + 1);
+        }
+        return result;
+      }
       const result: LogMetadata = {};
       for (const [entryKey, entryValue] of Object.entries(input)) result[entryKey] = visit(entryValue, entryKey, depth + 1);
       return result;
