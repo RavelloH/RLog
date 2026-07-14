@@ -19,6 +19,16 @@ export type LogTargets = "all" | ReadonlySet<LogTarget>;
 export type ScreenOutput = "stdout" | "stderr" | "none" | Writable;
 export type MetadataOutputMode = "none" | "inline" | "block";
 export type FileErrorPolicy = "throw" | "disable" | "stderr" | "ignore";
+/** A string keeps the v3 API compatible; the object form lets critical outputs opt into stricter delivery. */
+export type FileErrorPolicyConfig = FileErrorPolicy | {
+  default?: FileErrorPolicy;
+  text?: FileErrorPolicy;
+  jsonl?: FileErrorPolicy;
+  capture?: FileErrorPolicy;
+};
+export type CaptureFileMode = "append" | "truncate" | "exclusive";
+export type CaptureConsumerErrorPolicy = "fail" | "ignore";
+export type CaptureLineOverflowPolicy = "truncate" | "split" | "error";
 
 /** `maxFiles` is the number of retained historical files; it excludes the active file. */
 export interface RotationOptions {
@@ -56,6 +66,10 @@ export interface ConfigOptions {
   jsonlLogLevel?: LogLevelInput;
   screenOutput?: ScreenOutput;
   jsonlFilePath?: string;
+  /** Optional second JSONL destination. RLog never closes caller-owned streams. */
+  jsonlOutput?: ScreenOutput;
+  /** Extra stable fields added to every JSONL record. Required RLog fields win on conflict. */
+  jsonlBaseFields?: LogMetadata;
   /** Size-based rotation for the text log. Disabled by default. */
   textRotation?: RotationOptions | false;
   /** Size-based rotation for the JSONL log. Disabled by default. */
@@ -68,7 +82,7 @@ export interface ConfigOptions {
   readLogLevelFromEnv?: boolean;
   logLevelArgumentName?: string;
   logLevelEnvironmentName?: string;
-  fileErrorPolicy?: FileErrorPolicy;
+  fileErrorPolicy?: FileErrorPolicyConfig;
   onFileError?: (error: Error, context: FileErrorContext) => void;
   exitListenerTimeoutMs?: number;
   exitCloseTimeoutMs?: number;
@@ -99,6 +113,27 @@ export interface EventOptions {
   message?: string;
 }
 
+export interface LogSpan {
+  readonly name: string;
+  readonly startedAt: Date;
+  info(...args: unknown[]): LogEntry;
+  event(type: string, data?: LogMetadata, options?: EventOptions): LogEntry;
+  success(data?: LogMetadata): void;
+  fail(error: unknown, data?: LogMetadata): void;
+}
+
+export interface ProgressTaskOptions {
+  label: string;
+  total: number;
+  current?: number;
+}
+
+export interface ProgressTask {
+  update(current: number): void;
+  complete(data?: LogMetadata): void;
+  fail(reason?: unknown, data?: LogMetadata): void;
+}
+
 export interface RLogExitError extends Error {
   isRLogExit: true;
 }
@@ -117,12 +152,15 @@ export class LogEntryAlreadyCommittedError extends Error {
   }
 }
 
-export type CaptureEndReason = "end" | "process-close" | "manual-close" | "logger-close" | "error";
+export type CaptureEndReason = "end" | "process-close" | "manual-close" | "logger-close" | "aborted" | "error";
 export type CaptureErrorCode =
   | "CAPTURE_SOURCE_ERROR"
   | "CAPTURE_FILE_ERROR"
-  | "CAPTURE_DECODE_ERROR"
-  | "CAPTURE_ABORTED_BY_LOGGER_CLOSE";
+  | "CAPTURE_ABORTED_BY_LOGGER_CLOSE"
+  | "CAPTURE_ABORTED"
+  | "CAPTURE_CONSUMER_ERROR"
+  | "CAPTURE_BUFFER_OVERFLOW"
+  | "CAPTURE_LINE_TOO_LONG";
 
 export interface CaptureResultBase {
   startedAt: Date;
@@ -166,6 +204,15 @@ export interface CapturePartialResult {
   bytes?: number;
   stdoutBytes?: number;
   stderrBytes?: number;
+  stdoutLines?: number;
+  stderrLines?: number;
+  stdoutFile?: string;
+  stderrFile?: string;
+  stdoutSha256?: string;
+  stderrSha256?: string;
+  exitCode?: number | null;
+  signal?: NodeJS.Signals | null;
+  failedChannel?: "stdout" | "stderr" | "process";
   file?: string;
 }
 
@@ -187,6 +234,7 @@ export interface StreamCaptureHandle<TResult extends CaptureResultBase> {
   readonly done: Promise<TResult>;
   flush(): Promise<void>;
   close(): Promise<TResult>;
+  abort(reason?: string): Promise<never>;
 }
 
 export interface TextStreamCaptureHandle extends StreamCaptureHandle<StreamCaptureResult> {
@@ -195,7 +243,36 @@ export interface TextStreamCaptureHandle extends StreamCaptureHandle<StreamCaptu
 
 export interface BinaryStreamCaptureHandle extends StreamCaptureHandle<BinaryCaptureResult> {}
 
-export interface ProcessCaptureOptions {
+export interface ProcessCaptureHandle {
+  readonly done: Promise<ProcessCaptureResult>;
+  flush(): Promise<void>;
+  /** Stops capturing without killing the caller-owned child process. */
+  abort(reason?: string): Promise<never>;
+}
+
+export interface CaptureLine {
+  text: string;
+  timestamp: Date;
+  terminated: boolean;
+  lineNumber: number;
+  rawBytes?: number;
+}
+
+export interface CaptureBaseOptions {
+  /** Stops Capture only. It does not terminate a caller-owned child by default. */
+  signal?: AbortSignal;
+  /** Capture files default to truncate so a reused path cannot mix two captures. */
+  fileMode?: CaptureFileMode;
+  /** Capture display mirrors default to screen rather than every configured log target. */
+  mirrorTargets?: LogTargets;
+  /** Async consumer failures fail Capture by default because they commonly verify a protocol handshake. */
+  consumerErrorPolicy?: CaptureConsumerErrorPolicy;
+  highWaterMarkBytes?: number;
+  lowWaterMarkBytes?: number;
+  maxPendingBytes?: number;
+}
+
+export interface ProcessCaptureOptions extends CaptureBaseOptions {
   stdoutFile?: string;
   stderrFile?: string;
   stdoutDisplay?: LogLevelInput | "none";
@@ -204,18 +281,29 @@ export interface ProcessCaptureOptions {
   stripAnsiInFiles?: boolean;
   encoding?: BufferEncoding;
   computeSha256?: boolean;
+  onLine?: (line: CaptureLine & { channel: "stdout" | "stderr" }) => void | Promise<void>;
+  onStdoutLine?: (line: CaptureLine) => void | Promise<void>;
+  onStderrLine?: (line: CaptureLine) => void | Promise<void>;
+  maxLineBytes?: number;
+  lineOverflowPolicy?: CaptureLineOverflowPolicy;
+  /** Opt in only: process ownership remains with the caller by default. */
+  killProcessOnAbort?: boolean;
+  killSignal?: NodeJS.Signals;
 }
 
-export interface StreamCaptureOptions {
+export interface StreamCaptureOptions extends CaptureBaseOptions {
   file?: string;
   encoding?: BufferEncoding;
   displayLevel?: LogLevelInput | "none";
   stripAnsiInFile?: boolean;
   timestampLines?: boolean;
   computeSha256?: boolean;
+  onLine?: (line: CaptureLine) => void | Promise<void>;
+  maxLineBytes?: number;
+  lineOverflowPolicy?: CaptureLineOverflowPolicy;
 }
 
-export interface BinaryCaptureOptions {
+export interface BinaryCaptureOptions extends CaptureBaseOptions {
   file: string;
   computeSha256?: boolean;
 }

@@ -3,7 +3,7 @@ import * as path from "node:path";
 import type { Writable } from "node:stream";
 import { labelFor, shouldLog } from "./levels";
 import type { Config } from "./config";
-import type { FileErrorContext, LogColor, LogRecord, LogTarget, RotationOptions } from "./types";
+import type { CaptureFileMode, FileErrorContext, LogColor, LogRecord, LogTarget, RotationOptions } from "./types";
 import { Toolkit } from "./toolkit";
 
 export type ErrorReporter = (error: Error, context: FileErrorContext) => void;
@@ -59,6 +59,17 @@ function writeTo(stream: Writable, value: string | Buffer, listenForError = true
   });
 }
 
+async function writeToExternal(stream: Writable, value: string): Promise<void> {
+  const guard = guardConsoleTarget(stream); let failed = false;
+  try {
+    await writeTo(stream, value, false);
+    await afterCurrentTurn();
+    const emitted = guard.takeError();
+    if (emitted) throw emitted;
+  } catch (reason) { failed = true; throw reason; }
+  finally { guard.release(failed); }
+}
+
 /**
  * A serial, append-only file. Rotation is deliberately contained here so both
  * file sinks retain identical Windows-safe close/rename/reopen behavior.
@@ -67,6 +78,7 @@ export class ManagedFile {
   private writeStream: fs.WriteStream | undefined;
   private disabled = false;
   private openedPath: string | undefined;
+  private openedMode: CaptureFileMode = "append";
   private currentBytes = 0;
   private readonly reportedErrors = new WeakSet<Error>();
   private activeOperation: FileErrorContext["operation"] | undefined;
@@ -82,8 +94,8 @@ export class ManagedFile {
    */
   get stream(): fs.WriteStream | null { return this.writeStream ?? null; }
 
-  init(filePath: string): Promise<void> { return this.enqueue(() => this.doInit(filePath)); }
-  write(filePath: string, value: string | Buffer): Promise<void> { return this.enqueue(() => this.doWrite(filePath, value)); }
+  init(filePath: string, mode: CaptureFileMode = "append"): Promise<void> { return this.enqueue(() => this.doInit(filePath, mode)); }
+  write(filePath: string, value: string | Buffer, mode: CaptureFileMode = "append"): Promise<void> { return this.enqueue(() => this.doWrite(filePath, value, mode)); }
   flush(): Promise<void> { return this.enqueue(() => this.doFlush()); }
   close(): Promise<void> { return this.enqueue(() => this.doClose()); }
 
@@ -93,15 +105,15 @@ export class ManagedFile {
     return result;
   }
 
-  private async doInit(filePath: string): Promise<void> { if (!this.disabled) await this.open(filePath); }
+  private async doInit(filePath: string, mode: CaptureFileMode): Promise<void> { if (!this.disabled) await this.open(filePath, mode); }
 
-  private async doWrite(filePath: string, value: string | Buffer): Promise<void> {
+  private async doWrite(filePath: string, value: string | Buffer, mode: CaptureFileMode): Promise<void> {
     if (this.disabled) return;
     try {
-      await this.open(filePath);
+      await this.open(filePath, mode);
       const bytes = Buffer.isBuffer(value) ? value.length : Buffer.byteLength(value);
       const rotation = this.getRotation();
-      if (rotation && this.currentBytes > 0 && this.currentBytes + bytes > rotation.maxBytes) await this.rotate(filePath, rotation);
+      if (rotation && mode === "append" && this.currentBytes > 0 && this.currentBytes + bytes > rotation.maxBytes) await this.rotate(filePath, rotation);
       await writeTo(this.writeStream!, value);
       this.currentBytes += bytes;
     } catch (reason) {
@@ -142,7 +154,7 @@ export class ManagedFile {
         try { await fs.promises.rename(filePath, `${filePath}.1`); }
         catch (reason) { if ((reason as NodeJS.ErrnoException).code !== "ENOENT") throw reason; }
       }
-      await this.open(filePath);
+      await this.open(filePath, "append");
       this.currentBytes = 0;
     } catch (reason) {
       const error = toError(reason);
@@ -178,12 +190,12 @@ export class ManagedFile {
     }).catch((reason: unknown) => { const error = toError(reason); this.reportOnce(error, { filePath: this.openedPath, output: this.output, operation }); throw error; });
   }
 
-  private async open(filePath: string): Promise<void> {
-    if (this.writeStream && this.openedPath === filePath) return;
-    await this.doOpen(filePath);
+  private async open(filePath: string, mode: CaptureFileMode): Promise<void> {
+    if (this.writeStream && this.openedPath === filePath && this.openedMode === mode) return;
+    await this.doOpen(filePath, mode);
   }
 
-  private async doOpen(filePath: string): Promise<void> {
+  private async doOpen(filePath: string, mode: CaptureFileMode): Promise<void> {
     if (this.writeStream) await this.closeCurrent();
     // A failed reopen is part of a rotation transaction, not an ordinary open.
     const operation: FileErrorContext["operation"] = this.activeOperation === "rotate" ? "rotate" : "open";
@@ -195,8 +207,10 @@ export class ManagedFile {
         throw reason;
       });
       this.currentBytes = stat?.size ?? 0;
-      this.writeStream = fs.createWriteStream(filePath, { flags: "a" });
+      const flags: "a" | "w" | "wx" = mode === "append" ? "a" : mode === "truncate" ? "w" : "wx";
+      this.writeStream = fs.createWriteStream(filePath, { flags });
       this.openedPath = filePath;
+      this.openedMode = mode;
       this.writeStream.on("error", (reason: Error) => { this.disabled = true; this.reportOnce(reason, { filePath: this.openedPath, output: this.output, operation: this.activeOperation ?? "write" }); });
       await new Promise<void>((resolve, reject) => { this.writeStream!.once("open", resolve); this.writeStream!.once("error", reject); });
     } catch (reason) {
@@ -283,14 +297,42 @@ export class TextFileSink implements LogSink {
 export class JsonlFileSink implements LogSink {
   readonly target = "jsonl" as const;
   readonly file: ManagedFile;
-  constructor(private readonly config: Config, private readonly toolkit: Toolkit, report: ErrorReporter) { this.file = new ManagedFile("jsonl", report, () => config.jsonlRotation); }
+  private outputDisabled = false;
+  constructor(private readonly config: Config, private readonly toolkit: Toolkit, private readonly report: ErrorReporter) { this.file = new ManagedFile("jsonl", report, () => config.jsonlRotation); }
   async write(record: LogRecord): Promise<void> {
-    if (!this.config.jsonlFilePath || !targetsRecord(record, this.target) || !shouldLog(record.level, this.config.effectiveLevel("jsonl"))) return;
-    const value = { id: record.id, timestamp: this.toolkit.safeJson(record.timestamp), level: record.level, message: this.toolkit.encryptPrivacyContent(record.message), args: this.toolkit.safeJson(record.args), context: this.toolkit.safeJson(record.context), meta: this.toolkit.safeJson(record.metadata), event: record.event ? { type: record.event.type, data: this.toolkit.safeJson(record.event.data ?? {}) } : null };
-    await this.file.write(this.config.jsonlFilePath, `${JSON.stringify(value)}\n`);
+    if ((!this.config.jsonlFilePath && !this.resolveOutput()) || !targetsRecord(record, this.target) || !shouldLog(record.level, this.config.effectiveLevel("jsonl"))) return;
+    const value = {
+      ...this.toolkit.safeJson(this.config.jsonlBaseFields) as Record<string, unknown>,
+      schema: "rlog.record",
+      version: 1,
+      id: record.id,
+      timestamp: this.toolkit.safeJson(record.timestamp),
+      level: record.level,
+      message: this.toolkit.encryptPrivacyContent(record.message),
+      args: this.toolkit.safeJson(record.args),
+      context: this.toolkit.safeJson(record.context),
+      meta: this.toolkit.safeJson(record.metadata),
+      event: record.event ? { type: record.event.type, data: this.toolkit.safeJson(record.event.data ?? {}) } : null,
+    };
+    const line = `${JSON.stringify(value)}\n`;
+    if (this.config.jsonlFilePath) await this.file.write(this.config.jsonlFilePath, line);
+    const output = this.resolveOutput();
+    if (output) {
+      try { await writeToExternal(output, line); }
+      catch (reason) {
+        const error = toError(reason);
+        this.outputDisabled = true;
+        this.report(error, { output: "jsonl", operation: "write" });
+        throw error;
+      }
+    }
   }
   flush(): Promise<void> { return this.file.flush(); }
   close(): Promise<void> { return this.file.close(); }
+  private resolveOutput(): Writable | undefined {
+    if (this.outputDisabled || this.config.jsonlOutput === "none") return undefined;
+    return this.config.jsonlOutput === "stdout" ? process.stdout : this.config.jsonlOutput === "stderr" ? process.stderr : this.config.jsonlOutput;
+  }
 }
 
 function levelColor(level: LogRecord["level"]): LogColor { switch (level) { case "trace": return "gray"; case "debug": return "blue"; case "info": return "cyan"; case "success": return "green"; case "warn": return "yellow"; case "error": case "fatal": return "red"; } }

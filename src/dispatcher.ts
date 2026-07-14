@@ -41,6 +41,16 @@ export class Dispatcher {
 
   enqueue(record: LogRecord): void {
     this.assertOpen();
+    this.enqueueAccepted(record);
+  }
+
+  /** Internal Capture mirror path. Capture is allowed to drain while close is in progress. */
+  enqueueCapture(record: LogRecord): void {
+    if (this.state === "closed") throw new RLogClosedError();
+    this.enqueueAccepted(record);
+  }
+
+  private enqueueAccepted(record: LogRecord): void {
     // The default screen format does not include metadata, so it is safe to
     // retain 2.1's synchronous terminal behavior while file/JSONL waits one
     // microtask for a chained .meta() call.
@@ -82,12 +92,13 @@ export class Dispatcher {
   reportFileError(error: Error, context: FileErrorContext): void {
     this.reportedFileErrors.add(error);
     try { this.config.onFileError?.(error, context); } catch (callbackError) { this.pushDeferredError(toError(callbackError)); }
-    if (this.config.fileErrorPolicy === "stderr") process.stderr.write(`RLog file error (${context.operation}, ${context.output}): ${error.message}\n`);
-    if (this.config.fileErrorPolicy === "throw") this.pushDeferredError(error);
+    const policy = this.config.fileErrorPolicyFor(context.output);
+    if (policy === "stderr") process.stderr.write(`RLog file error (${context.operation}, ${context.output}): ${error.message}\n`);
+    if (policy === "throw") this.pushDeferredError(error);
   }
 
   private captureFileError(error: Error): void {
-    if (this.config.fileErrorPolicy === "throw") this.pushDeferredError(error);
+    if (this.config.fileErrorPolicyFor("capture") === "throw") this.pushDeferredError(error);
   }
 
   private pushDeferredError(error: Error): void {

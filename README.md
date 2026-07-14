@@ -253,6 +253,16 @@ rlog.jsonl.event("request", { authorization: "Bearer secret" });
 
 JSONL 与 metadata 序列化不会修改原对象，并安全处理 `BigInt`、`Date`、`Error` 和 `Error.cause`、`Buffer`、`undefined`、`Symbol`、函数、循环引用以及过深对象。
 
+每条 JSONL 记录都有稳定的 `schema: "rlog.record"` 与 `version: 1`。除了 `jsonlFilePath`，还可以把同一条 JSONL 写入调用方拥有的 `Writable`，例如为 Agent 提供实时事件流；RLog 不会关闭该 stream：
+
+```js
+const rlog = new Rlog({
+  jsonlFilePath: "./runs/r-1/events.jsonl",
+  jsonlOutput: process.stdout,
+  jsonlBaseFields: { producer: "benchpilot", protocolVersion: 1 },
+});
+```
+
 ## 文件轮转
 
 文本和 JSONL 可分别按大小轮转；默认关闭。`maxFiles` 是保留的历史文件数量，不包括当前活动文件。
@@ -280,7 +290,7 @@ app.log.2
 
 ### 文本流
 
-`capture.stream()` 递增读取文本流，支持编码、展示等级、文件输出、ANSI 清理、逐行时间戳、SHA-256 与标记事件。
+`capture.stream()` 递增读取文本流，支持编码、展示等级、文件输出、ANSI 清理、逐行时间戳、SHA-256、标记事件、行回调、取消与背压控制。Capture 镜像默认只写入 `screen`，不会把高频设备行重复写入 text 或 JSONL。
 
 ```js
 const handle = rlog.capture.stream(readable, {
@@ -290,6 +300,12 @@ const handle = rlog.capture.stream(readable, {
   stripAnsiInFile: true,
   timestampLines: true,
   computeSha256: true,
+  mirrorTargets: "screen",
+  fileMode: "truncate",
+  onLine(line) {
+    // 已处理 UTF-8 跨 chunk，尾行的 terminated 为 false。
+    if (line.text.startsWith('{')) inspectDeviceEvent(line.text);
+  },
 });
 
 handle.mark("flash-start", { image: "firmware.bin" });
@@ -298,7 +314,7 @@ const result = await handle.done;
 // result: bytes, chunks, lines, sha256, startedAt, endedAt, durationMs ...
 ```
 
-未换行尾部、UTF-8 跨 chunk 字符和 ANSI 序列都会正确收尾。`handle.close()` 可手动结束 Capture。
+未换行尾部、UTF-8 跨 chunk 字符和 ANSI 序列都会正确收尾。`handle.close()` 可手动成功结束 Capture；`AbortSignal` 会停止 Capture、落盘已排队数据并使 `done` 以 `CAPTURE_ABORTED` 拒绝。Capture 默认以 `truncate` 创建文件，另可选择 `append` 或避免覆盖证据的 `exclusive`。默认 4 MiB/1 MiB 高低水位会暂停/恢复来源；`maxPendingBytes` 防止写入慢于来源时无限占用内存。`maxLineBytes` 与 `lineOverflowPolicy` 可限制无换行输入。
 
 > 安全提示：Capture 文件保存的是外部流的原始内容（或由 Capture 选项要求的最小转换），不会自动应用 `blockedWordsList` 或 `redactKeys`。它们可能包含 token、密码、设备输出或其他敏感信息。调用者应负责文件权限、保存位置和清理策略；Capture 文件也不参与普通日志轮转。
 
@@ -317,7 +333,7 @@ const result = await handle.done;
 
 ### 子进程
 
-`capture.process()` 同时处理 stdout/stderr，可分别设置文件、显示等级，并控制 ANSI 与原始字节保留：
+`capture.process()` 同时处理 stdout/stderr，可分别设置文件、显示等级、实时行回调，并控制 ANSI 与原始字节保留：
 
 ```js
 const { spawn } = require("node:child_process");
@@ -335,6 +351,23 @@ const result = await rlog.capture.process(child, {
 });
 
 console.log(result.exitCode, result.signal, result.stdoutSha256);
+```
+
+若需要单独停止某个 Capture 而继续使用 Logger，请使用 `processHandle()`。`abort()` 默认不杀死调用方拥有的子进程：
+
+```js
+const capture = rlog.capture.processHandle(child, {
+  stdoutFile: "./runs/r-1/flash.stdout.log",
+  onStdoutLine(line) { observeToolOutput(line.text); },
+});
+
+// BenchPilot 决定进程生命周期；RLog 只停止 Capture。
+child.kill();
+try {
+  await capture.abort("operation-timeout");
+} catch (error) {
+  // CaptureError: CAPTURE_ABORTED
+}
 ```
 
 关闭 Logger 会使活动 Capture settle，但不会杀死被捕获的子进程。
@@ -365,9 +398,32 @@ rlog.onExit(async () => {
 rlog.exit("finished");
 ```
 
+## Span 与进度任务
+
+`withSpan()` 为通用阶段计时生成 `span.started`、`span.completed` 或 `span.failed` 事件，并保留调用 Logger 的 context：
+
+```js
+await rlog.child({ device: "controller" }).withSpan(
+  "flash",
+  { image: "firmware.bin" },
+  async (span) => {
+    span.info("Connecting to XDS110");
+    await flash();
+  },
+);
+```
+
+`progressTask()` 在 screen 上使用现有 progress 输出，同时向 JSONL 写入稳定的 `progress.started`、`progress.updated`、`progress.completed` 和 `progress.failed` 事件：
+
+```js
+const progress = rlog.progressTask({ label: "Flashing controller", total: 100 });
+progress.update(35);
+progress.complete();
+```
+
 ## 文件错误策略
 
-`fileErrorPolicy` 决定文本、JSONL、Capture 文件或轮转失败时的行为：
+`fileErrorPolicy` 决定文本、JSONL、Capture 文件或轮转失败时的行为。它可以是统一字符串，也可以按输出类型分别配置：
 
 | 值 | 行为 |
 | --- | --- |
@@ -380,7 +436,12 @@ rlog.exit("finished");
 
 ```js
 const rlog = new Rlog({
-  fileErrorPolicy: "stderr",
+  fileErrorPolicy: {
+    text: "stderr",
+    jsonl: "throw",
+    capture: "throw",
+    default: "throw",
+  },
   onFileError(error, context) {
     console.error("RLog file error", context.output, context.operation, error);
   },
@@ -396,6 +457,8 @@ const rlog = new Rlog({
   enableColorfulOutput: true,
   logFilePath: "./logs/app.log",
   jsonlFilePath: "./logs/events.jsonl",
+  jsonlOutput: "none",
+  jsonlBaseFields: { producer: "my-cli" },
   timeFormat: "YYYY-MM-DD HH:mm:ss.SSS",
   timezone: "Asia/Shanghai",
   logTemplate: "[{time}][{level}] {message}",
@@ -426,7 +489,7 @@ const rlog = new Rlog({
 });
 ```
 
-`setConfig()` 立即更新当前实例。`setConfigGlobal()` 会立即更新所有现有实例，并成为后续新实例的默认值；传入的 rotation 配置会被复制，后续修改原对象不会影响 RLog：
+`setConfig()` 立即更新当前实例。`setConfigGlobal()` 会立即更新所有仍处于打开状态的实例，并成为后续新实例的默认值；已关闭 Logger 会从全局实例集合释放。传入的 rotation、context、脱敏数组和颜色规则会被复制，后续修改原对象不会影响 RLog：
 
 ```js
 rlog.config.setConfig({ logLevel: "debug" });
@@ -447,7 +510,7 @@ const {
 } = require("rlog-js");
 ```
 
-`CaptureError` 带有 `code`、`cause` 与 `partialResult`，错误代码包括 `CAPTURE_SOURCE_ERROR`、`CAPTURE_FILE_ERROR`、`CAPTURE_DECODE_ERROR` 和 `CAPTURE_ABORTED_BY_LOGGER_CLOSE`。
+`CaptureError` 带有 `code`、`cause` 与 `partialResult`。文本 Capture 使用 Node.js 宽松 UTF-8 解码（非法字节会被替换，不产生 decode error）；错误代码包括 `CAPTURE_SOURCE_ERROR`、`CAPTURE_FILE_ERROR`、`CAPTURE_ABORTED`、`CAPTURE_ABORTED_BY_LOGGER_CLOSE`、`CAPTURE_CONSUMER_ERROR`、`CAPTURE_BUFFER_OVERFLOW` 与 `CAPTURE_LINE_TOO_LONG`。
 
 ## 开发
 

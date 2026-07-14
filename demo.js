@@ -78,19 +78,25 @@ async function main() {
     rlog.info("rotation sample %d: %s", index, "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx");
   }
 
-  // Progress writes are included in flush() and close().
-  rlog.progress(1, 3);
-  rlog.progress(2, 3);
-  rlog.progress(3, 3);
+  // A progress task updates the screen and emits structured JSONL lifecycle events.
+  const progress = rlog.progressTask({ label: "Flashing controller", total: 3 });
+  progress.update(1);
+  progress.update(2);
+  progress.complete({ image: "firmware.bin" });
   process.stdout.write("\n");
 
-  // Text Capture: streaming text, timestamps, ANSI cleanup, mark, and SHA-256.
-  const streamCapture = rlog.capture.stream(Readable.from(["serial boot\n", "serial ready\n"]), {
+  // Child Capture inherits controller context. Mirrors default to screen only;
+  // onLine receives decoded lines once, including an unterminated tail.
+  const streamCapture = controller.capture.stream(Readable.from(["serial boot\n", "serial ready\n"]), {
     file: path.join(logDirectory, "serial-capture.log"),
     timestampLines: true,
     stripAnsiInFile: true,
     displayLevel: "debug",
     computeSha256: true,
+    fileMode: "truncate",
+    onLine(line) {
+      if (line.text === "serial ready") controller.jsonl.event("serial.ready", { line: line.lineNumber });
+    },
   });
   streamCapture.mark("serial-ready", { port: "COM9" });
   const streamResult = await streamCapture.done;
@@ -102,6 +108,10 @@ async function main() {
     computeSha256: true,
   }).done;
   rlog.info("binary capture bytes=%d sha256=%s", binaryResult.bytes, binaryResult.sha256);
+
+  await controller.withSpan("flash", { image: "firmware.bin" }, async (span) => {
+    span.info("span timing example");
+  });
 
   // Process Capture independently handles stdout/stderr, files, display and hashes.
   const child = spawn(process.execPath, ["-e", "process.stdout.write('tool output\\n'); process.stderr.write('tool warning\\n')"]);

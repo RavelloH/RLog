@@ -1,11 +1,11 @@
 import type { Readable } from "node:stream";
 import type { ChildProcess } from "node:child_process";
-import { CaptureManager } from "./capture";
+import { CaptureManager, type CaptureLoggerBinding } from "./capture";
 import { Config } from "./config";
 import { Dispatcher } from "./dispatcher";
 import { normalizeLevel } from "./levels";
 import { Toolkit } from "./toolkit";
-import type { BinaryCaptureOptions, BinaryStreamCaptureHandle, ConfigOptions, EventOptions, LogEntry, LogLevelInput, LogMetadata, LogTargets, LogTarget, ProcessCaptureOptions, ProcessCaptureResult, StreamCaptureOptions, TextStreamCaptureHandle, Tostringable } from "./types";
+import type { BinaryCaptureOptions, BinaryStreamCaptureHandle, ConfigOptions, EventOptions, LogEntry, LogLevelInput, LogMetadata, LogSpan, LogTargets, LogTarget, ProcessCaptureHandle, ProcessCaptureOptions, ProcessCaptureResult, ProgressTask, ProgressTaskOptions, StreamCaptureOptions, TextStreamCaptureHandle, Tostringable } from "./types";
 import { CaptureError, LogEntryAlreadyCommittedError, RLogClosedError, type LogRecord, type RLogExitError } from "./types";
 
 export * from "./types";
@@ -48,6 +48,58 @@ export class TargetLogger {
     return entry;
   }
   at(timestamp: Tostringable): TargetLogger { return new TargetLogger(this.logger, this.targets, timestamp, true); }
+  withSpan<T>(name: string, operation: (span: LogSpan) => Promise<T> | T): Promise<T>;
+  withSpan<T>(name: string, data: LogMetadata, operation: (span: LogSpan) => Promise<T> | T): Promise<T>;
+  withSpan<T>(name: string, dataOrOperation: LogMetadata | ((span: LogSpan) => Promise<T> | T), possibleOperation?: (span: LogSpan) => Promise<T> | T): Promise<T> {
+    return this.logger.withSpanForTargets(this.targets, name, dataOrOperation, possibleOperation);
+  }
+  progressTask(options: ProgressTaskOptions): ProgressTask { return this.logger.progressTaskForTargets(this.targets, options); }
+}
+
+class LogSpanImpl implements LogSpan {
+  readonly startedAt = new Date();
+  private finished = false;
+  constructor(readonly name: string, private readonly target: TargetLogger, private readonly data: LogMetadata) {}
+  info(...args: unknown[]): LogEntry { return this.target.info(...args); }
+  event(type: string, data?: LogMetadata, options?: EventOptions): LogEntry { return this.target.event(type, data, options); }
+  success(data?: LogMetadata): void { if (!this.finished) { this.finished = true; this.target.event("span.completed", { ...this.data, ...(data ?? {}), durationMs: Date.now() - this.startedAt.valueOf() }); } }
+  fail(error: unknown, data?: LogMetadata): void {
+    if (this.finished) return;
+    this.finished = true;
+    const rendered = error instanceof Error ? { name: error.name, message: error.message } : String(error);
+    this.target.event("span.failed", { ...this.data, ...(data ?? {}), durationMs: Date.now() - this.startedAt.valueOf(), error: rendered }, { level: "error" });
+  }
+}
+
+class ProgressTaskImpl implements ProgressTask {
+  private current: number;
+  private done = false;
+  private readonly jsonl: TargetLogger;
+  constructor(private readonly owner: Rlog, private readonly target: TargetLogger, private readonly options: ProgressTaskOptions) {
+    this.current = options.current ?? 0;
+    this.jsonl = new TargetLogger(owner, new Set<LogTarget>(["jsonl"]));
+    this.jsonl.event("progress.started", { label: options.label, current: this.current, total: options.total });
+    this.owner.progress(this.current, this.options.total);
+  }
+  update(current: number): void {
+    if (this.done) return;
+    this.current = current;
+    this.owner.progress(current, this.options.total);
+    this.jsonl.event("progress.updated", { label: this.options.label, current, total: this.options.total });
+  }
+  complete(data?: LogMetadata): void {
+    if (this.done) return;
+    this.done = true;
+    this.owner.progress(this.options.total, this.options.total);
+    this.target.success(`${this.options.label}: complete`);
+    this.jsonl.event("progress.completed", { label: this.options.label, current: this.options.total, total: this.options.total, ...(data ?? {}) });
+  }
+  fail(reason?: unknown, data?: LogMetadata): void {
+    if (this.done) return;
+    this.done = true;
+    this.target.error(`${this.options.label}: failed`, reason ?? "");
+    this.jsonl.event("progress.failed", { label: this.options.label, current: this.current, total: this.options.total, ...(data ?? {}), reason: reason instanceof Error ? reason.message : reason }, { level: "error" });
+  }
 }
 
 /** Static screen facade constructor for `new Rlog.Screen(rlog)`. */
@@ -84,7 +136,12 @@ export default class Rlog {
   /** @deprecated Use `text`. Kept as the same facade instance for v2 compatibility. */
   readonly file: TextTargetLogger;
   readonly jsonl: TargetLogger;
-  readonly capture: { process: (child: ChildProcess, options?: ProcessCaptureOptions) => Promise<ProcessCaptureResult>; stream: (stream: Readable, options?: StreamCaptureOptions) => TextStreamCaptureHandle; binary: (stream: Readable, options: BinaryCaptureOptions) => BinaryStreamCaptureHandle };
+  readonly capture: {
+    process: (child: ChildProcess, options?: ProcessCaptureOptions) => Promise<ProcessCaptureResult>;
+    processHandle: (child: ChildProcess, options?: ProcessCaptureOptions) => ProcessCaptureHandle;
+    stream: (stream: Readable, options?: StreamCaptureOptions) => TextStreamCaptureHandle;
+    binary: (stream: Readable, options: BinaryCaptureOptions) => BinaryStreamCaptureHandle;
+  };
   private readonly dispatcher: Dispatcher;
   private readonly root: Rlog;
   private readonly context: LogMetadata;
@@ -97,14 +154,7 @@ export default class Rlog {
       this.root = internals.root; this.config = this.root.config; this.dispatcher = this.root.dispatcher; this.toolkit = this.root.toolkit; this.context = internals.context; this.exitListeners = this.root.exitListeners; this.captureManager = this.root.captureManager;
     } else {
       this.root = this; this.config = new Config(options); this.dispatcher = new Dispatcher(this.config); this.toolkit = this.dispatcher.toolkit; this.context = { ...this.config.context }; this.exitListeners = [];
-      this.captureManager = new CaptureManager(this.dispatcher, (level, line) => {
-        if (level === "none") return;
-        try { this.writeToTargets(level, [line], "all"); }
-        catch (error) {
-          // A trailing Capture mirror is optional during close; ordinary user writes remain rejected.
-          if (!(error instanceof RLogClosedError)) throw error;
-        }
-      }, (type, data) => { this.event(type, data); });
+      this.captureManager = new CaptureManager(this.dispatcher);
       if (this.config.autoInit && this.config.logFilePath) {
         void this.initText().catch(() => undefined);
         if (!this.config.silent) this.writeToTargets("info", [`The log will be written to ${this.config.logFilePath}`], new Set<LogTarget>(["screen"]));
@@ -114,7 +164,12 @@ export default class Rlog {
     this.text = new TextTargetLogger(this);
     this.file = this.text;
     this.jsonl = new TargetLogger(this, new Set<LogTarget>(["jsonl"]));
-    this.capture = { process: (child, captureOptions) => this.captureManager.process(child, captureOptions), stream: (stream, captureOptions) => this.captureManager.stream(stream, captureOptions), binary: (stream, captureOptions) => this.captureManager.binary(stream, captureOptions) };
+    this.capture = {
+      process: (child, captureOptions) => this.captureManager.process(child, captureOptions ?? {}, this.captureBinding()),
+      processHandle: (child, captureOptions) => this.captureManager.processHandle(child, captureOptions ?? {}, this.captureBinding()),
+      stream: (stream, captureOptions) => this.captureManager.stream(stream, captureOptions ?? {}, this.captureBinding()),
+      binary: (stream, captureOptions) => this.captureManager.binary(stream, captureOptions),
+    };
   }
 
   trace(...args: unknown[]): LogEntry { return this.writeToTargets("trace", args, "all"); }
@@ -131,13 +186,22 @@ export default class Rlog {
     return this.writeToTargets(level, args, "all");
   }
   event(type: string, data?: LogMetadata, options: EventOptions = {}): LogEntry { return new TargetLogger(this, "all").event(type, data, options); }
+  withSpan<T>(name: string, operation: (span: LogSpan) => Promise<T> | T): Promise<T>;
+  withSpan<T>(name: string, data: LogMetadata, operation: (span: LogSpan) => Promise<T> | T): Promise<T>;
+  withSpan<T>(name: string, dataOrOperation: LogMetadata | ((span: LogSpan) => Promise<T> | T), possibleOperation?: (span: LogSpan) => Promise<T> | T): Promise<T> {
+    return this.withSpanForTargets("all", name, dataOrOperation, possibleOperation);
+  }
+  progressTask(options: ProgressTaskOptions): ProgressTask { return this.progressTaskForTargets("all", options); }
   /** Bind an explicit timestamp without allocating another Dispatcher, Config, Sink, or stream. */
   at(timestamp: Tostringable): TargetLogger { return new TargetLogger(this, "all", timestamp, true); }
 
   child(context: LogMetadata): Rlog { return new Rlog(undefined, { root: this.root, context: { ...this.currentContext(), ...context } }); }
   onExit(listener: ExitListener): void { this.root.exitListeners.push(listener); }
   async flush(): Promise<void> { return this.root.dispatcher.flush(); }
-  async close(): Promise<void> { return this.root.dispatcher.close(); }
+  async close(): Promise<void> {
+    try { await this.root.dispatcher.close(); }
+    finally { this.root.config.dispose(); }
+  }
   progress(num: number, max: number): void { void this.root.dispatcher.progress(num, max); }
 
   exit(message: unknown): never {
@@ -161,6 +225,18 @@ export default class Rlog {
     return new LogEntryImpl(record);
   }
 
+  /** Capture-only write path. It may drain records during root closing, unlike public logging APIs. */
+  private writeCaptureToTargets(level: LogLevelInput, args: readonly unknown[], targets: LogTargets): void {
+    const normalized = normalizeLevel(level);
+    if (normalized === "off") return;
+    const record: LogRecord = {
+      id: this.root.dispatcher.nextId(), timestamp: new Date(), level: normalized, args: [...args],
+      message: this.toolkit.formatConsoleArgs(args), metadata: {}, context: this.currentContext(), targets,
+      committed: false,
+    };
+    this.root.dispatcher.enqueueCapture(record);
+  }
+
   async writeRawText(text: string): Promise<void> { this.root.dispatcher.assertOpen(); if (this.config.logFilePath) await this.root.dispatcher.text.file.write(this.config.logFilePath, text); }
   /** @deprecated Use `writeRawText` through `rlog.text.writeRaw`. */
   async writeRawFile(text: string): Promise<void> { return this.writeRawText(text); }
@@ -171,13 +247,46 @@ export default class Rlog {
     catch (reason) {
       // ManagedFile has already reported the failure. Throw-policy callers can
       // observe it immediately; tolerant policies retain the disabled target.
-      if (this.config.fileErrorPolicy === "throw") throw reason;
+      if (this.config.fileErrorPolicyFor("text") === "throw") throw reason;
     }
   }
   /** @deprecated Use `initText` through `rlog.text.init`. */
   async initFile(): Promise<void> { return this.initText(); }
 
   private currentContext(): LogMetadata { return this === this.root ? { ...this.config.context } : { ...this.context }; }
+  withSpanForTargets<T>(targets: LogTargets, name: string, dataOrOperation: LogMetadata | ((span: LogSpan) => Promise<T> | T), possibleOperation?: (span: LogSpan) => Promise<T> | T): Promise<T> {
+    const data = typeof dataOrOperation === "function" ? {} : dataOrOperation;
+    const operation = typeof dataOrOperation === "function" ? dataOrOperation : possibleOperation;
+    if (!operation) return Promise.reject(new TypeError("withSpan requires an operation callback"));
+    const spanLogger = this.child({ ...data, span: name });
+    const target = new TargetLogger(spanLogger, targets);
+    const span = new LogSpanImpl(name, target, data);
+    target.event("span.started", { ...data, startedAt: span.startedAt.toISOString() });
+    return Promise.resolve()
+      .then(() => operation(span))
+      .then((result) => { span.success(); return result; }, (error: unknown) => { span.fail(error); throw error; });
+  }
+  progressTaskForTargets(targets: LogTargets, options: ProgressTaskOptions): ProgressTask {
+    if (!options.label || !Number.isFinite(options.total) || options.total <= 0) throw new Error("progressTask requires a non-empty label and positive finite total");
+    return new ProgressTaskImpl(this, new TargetLogger(this, targets), options);
+  }
+  private captureBinding(): CaptureLoggerBinding {
+    return {
+      write: (level, args, targets) => {
+        if (level === "none") return;
+        try { this.writeCaptureToTargets(level, args, targets); }
+        catch (error) {
+          // A final optional Capture mirror may race root closing. User logs are still rejected.
+          if (!(error instanceof RLogClosedError)) throw error;
+        }
+      },
+      event: (type, data) => {
+        // Marks are low-frequency structured capture facts, not display lines.
+        try { this.jsonl.event(type, data); }
+        catch (error) { if (!(error instanceof RLogClosedError)) throw error; }
+      },
+    };
+  }
   private async runExitCoordinator(): Promise<void> {
     let failed = false;
     for (const listener of this.exitListeners) { try { await withTimeout(Promise.resolve().then(listener), this.config.exitListenerTimeoutMs, "Exit listener timed out"); } catch (reason) { failed = true; process.stderr.write(`RLog exit listener failed: ${reason instanceof Error ? reason.stack ?? reason.message : String(reason)}\n`); } }
