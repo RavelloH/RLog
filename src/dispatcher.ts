@@ -126,7 +126,13 @@ export class Dispatcher {
     this.throwDeferredErrors();
   }
 
-  async progress(num: number, max: number): Promise<void> { this.assertOpen(); await this.console.progress(num, max); }
+  progress(num: number, max: number): void {
+    this.assertOpen();
+    // Start synchronously so progress retains its immediate terminal behavior,
+    // but retain the promise so flush()/close() await it and receive errors.
+    const write = this.console.progress(num, max).catch((reason: unknown) => { this.pushDeferredError(toError(reason)); });
+    this.screenWork = Promise.all([this.screenWork, write]).then(() => undefined);
+  }
   addCapture(capture: { closeForLogger(): Promise<void>; flush(): Promise<void> }): void { this.captures.add(capture); }
   removeCapture(capture: { closeForLogger(): Promise<void>; flush(): Promise<void> }): void { this.captures.delete(capture); }
 

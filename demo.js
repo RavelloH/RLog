@@ -1,117 +1,131 @@
+const fs = require("node:fs");
+const path = require("node:path");
+const { spawn } = require("node:child_process");
+const { Readable } = require("node:stream");
 const Rlog = require("./dist/index.js");
 
-const rlog = new Rlog({
-  logFilePath: "./log.txt",
-  timezone: "Asia/Shanghai",
-  autoInit: false,
-});
+const logDirectory = path.join(__dirname, "demo-logs");
+fs.rmSync(logDirectory, { recursive: true, force: true });
+fs.mkdirSync(logDirectory, { recursive: true });
 
-rlog.config.setConfig({
-  blockedWordsList: ["world", "[0-9]{9}"],
-  silent: false,
-});
+async function main() {
+  const rlog = new Rlog({
+    logFilePath: path.join(logDirectory, "app.log"),
+    jsonlFilePath: path.join(logDirectory, "events.jsonl"),
+    timezone: "Asia/Shanghai",
+    context: { application: "rlog-demo", environment: "local" },
+    screenMetadataOutput: "inline",
+    fileMetadataOutput: "block",
+    blockedWordsList: ["super-secret"],
+    redactKeys: ["token", "password"],
+    textRotation: { maxBytes: 700, maxFiles: 2 },
+    jsonlRotation: { maxBytes: 700, maxFiles: 2 },
+  });
 
-const defaultLogTemplate = rlog.config.logTemplate;
+  // init() is awaitable; normal writes can begin immediately afterwards.
+  await rlog.text.init();
+  rlog.info("RLog v3 demo started").meta({ pid: process.pid });
 
-rlog.onExit(() => {
-  rlog.warn("rlog.exit() called and event triggered.");
-});
+  // Console-compatible arguments and all log levels.
+  rlog.trace("trace detail: %j", { stage: "boot" });
+  rlog.debug("debug value=%d", 42);
+  rlog.info("device=%s port=%s", "controller", "COM9");
+  rlog.success("flash completed in %dms", 42);
+  rlog.warn("retrying after %dms", 100);
+  rlog.error(new Error("sample error"));
+  rlog.fatal("sample fatal record; the demo continues");
+  rlog.log("automatic success detection: done");
+  rlog.log("automatic warning detection: notice this");
 
-function sampleFunction(value) {
-  return value;
+  // Target routing: root writes everywhere; each facade writes only one sink.
+  rlog.screen.info("screen-only record");
+  rlog.text.info("text-only record");
+  rlog.jsonl.info("jsonl-only record");
+  rlog.info("file alias points to text: %s", rlog.file === rlog.text);
+
+  // Explicit timestamps preserve the same value in text and JSONL.
+  rlog.at(new Date("2026-07-14T10:00:00Z")).info("date-bound record");
+  rlog.at(456).info("numeric-bound record");
+  rlog.jsonl.at(9n).info("bigint-bound JSONL record");
+
+  // Context, child loggers, metadata, and structured events.
+  const controller = rlog.child({ device: "controller" });
+  controller.info("connected").meta("port", "COM9");
+  controller.jsonl
+    .event("device.connected", { port: "COM9" }, { level: "success", message: "device connected" })
+    .meta({ requestId: "req-1", token: "super-secret" });
+
+  // Text masking applies to messages; redactKeys applies to structured values.
+  rlog.info("blocked value: super-secret");
+  rlog.jsonl.event("request.received", { password: "super-secret", method: "POST" });
+
+  // Formatting, color rules, time templates, and multiline alignment.
+  rlog.config.setConfig({
+    customColorRules: [{ reg: "COM\\d+", color: "cyan" }],
+    logTemplate: "[{time:HH:mm:ss}][{level}] {message}",
+  });
+  rlog.info("multiline payload\nCOM9 ready\nnext step");
+  rlog.config.setConfig({ logTemplate: "[{time}][{level}] {message}" });
+
+  // Managed raw writes participate in ordering, errors, flush, and rotation.
+  await Promise.all([
+    rlog.text.writeRaw("raw text record A\n"),
+    rlog.text.writeRaw("raw text record B\n"),
+  ]);
+
+  // A small threshold makes the demo produce app.log.1 / events.jsonl.1.
+  for (let index = 0; index < 8; index += 1) {
+    rlog.info("rotation sample %d: %s", index, "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx");
+  }
+
+  // Progress writes are included in flush() and close().
+  rlog.progress(1, 3);
+  rlog.progress(2, 3);
+  rlog.progress(3, 3);
+  process.stdout.write("\n");
+
+  // Text Capture: streaming text, timestamps, ANSI cleanup, mark, and SHA-256.
+  const streamCapture = rlog.capture.stream(Readable.from(["serial boot\n", "serial ready\n"]), {
+    file: path.join(logDirectory, "serial-capture.log"),
+    timestampLines: true,
+    stripAnsiInFile: true,
+    displayLevel: "debug",
+    computeSha256: true,
+  });
+  streamCapture.mark("serial-ready", { port: "COM9" });
+  const streamResult = await streamCapture.done;
+  rlog.info("stream capture bytes=%d sha256=%s", streamResult.bytes, streamResult.sha256);
+
+  // Binary Capture stores raw bytes and optionally computes SHA-256.
+  const binaryResult = await rlog.capture.binary(Readable.from([Buffer.from([0, 1, 2, 3])]), {
+    file: path.join(logDirectory, "capture.bin"),
+    computeSha256: true,
+  }).done;
+  rlog.info("binary capture bytes=%d sha256=%s", binaryResult.bytes, binaryResult.sha256);
+
+  // Process Capture independently handles stdout/stderr, files, display and hashes.
+  const child = spawn(process.execPath, ["-e", "process.stdout.write('tool output\\n'); process.stderr.write('tool warning\\n')"]);
+  const processResult = await rlog.capture.process(child, {
+    stdoutFile: path.join(logDirectory, "tool.stdout.log"),
+    stderrFile: path.join(logDirectory, "tool.stderr.log"),
+    stdoutDisplay: "info",
+    stderrDisplay: "warn",
+    computeSha256: true,
+  });
+  rlog.jsonl.event("tool.finished", { exitCode: processResult.exitCode, stdoutBytes: processResult.stdoutBytes });
+
+  // Runtime configuration changes also affect existing sinks.
+  rlog.config.setConfig({ logLevel: "debug", textRotation: false });
+  rlog.text.debug("runtime configuration updated; text rotation is now disabled");
+
+  await rlog.flush();
+  rlog.info("flush completed; logger remains usable");
+  await rlog.close();
+
+  console.log(`Demo complete. Inspect ${logDirectory}`);
 }
 
-rlog.info("This is an info message");
-rlog.success("This is a success message");
-rlog.warn("This is a warning message");
-rlog.error("This is an error message");
-
-rlog.info("");
-rlog.info("Console-compatible argument formatting:");
-rlog.log("a", { b: 1 }, 1);
-rlog.log("user=%s score=%d", "Ravello", 100);
-rlog.log(new Map([["feature", "console-compatible"]]));
-
-rlog.info("");
-rlog.info("Type rendering examples:");
-rlog.info(123);
-rlog.info(true);
-rlog.info({
-  time: Date.now(),
-  text: "example",
+main().catch((error) => {
+  console.error(error);
+  process.exitCode = 1;
 });
-rlog.info([1, 2, "5"]);
-rlog.info(sampleFunction);
-rlog.info(null);
-rlog.info(undefined);
-rlog.info(new Error("demo error"));
-
-rlog.info("");
-rlog.info("Blocked words:");
-rlog.info("hello world !! 123456789");
-
-rlog.info("");
-rlog.info("String color rules:");
-rlog.info("Welcome to https://github.com/RavelloH/RLog");
-rlog.info("This is an ip: 123.45.67.89");
-rlog.info("This is a date: 1970-12-12");
-rlog.info("Boolean false true");
-
-rlog.info("");
-rlog.info("Multiline output:");
-rlog.info(`1
-22
-333
-4444`);
-rlog.info("payload", {
-  line1: "hello",
-  line2: "world",
-});
-
-rlog.info("");
-rlog.info("Automatic level recognition:");
-rlog.log("This is a success message.", { code: 200 });
-rlog.log("This is a warning message.", { code: 300 });
-rlog.log("This is an error message.", { code: 500 });
-rlog.log("This is an info message.", { code: 100 });
-
-rlog.info("");
-rlog.info("Time zone conversion:");
-rlog.config.timezone = "Pacific/Port_Moresby";
-rlog.info("Pacific/Port_Moresby");
-rlog.config.timezone = "America/Chicago";
-rlog.info("America/Chicago");
-rlog.config.timezone = "Asia/Shanghai";
-rlog.info("Asia/Shanghai");
-
-rlog.info("");
-rlog.info("Time format:");
-rlog.config.timeFormat = "UTC";
-rlog.info("UTC");
-rlog.config.timeFormat = "timestamp";
-rlog.info("timestamp");
-rlog.config.timeFormat = "ISO";
-rlog.info("ISO");
-rlog.config.timeFormat = "YYYY-MM-DD HH:mm:ss.SSS";
-rlog.info("YYYY-MM-DD HH:mm:ss.SSS");
-
-rlog.info("");
-rlog.info("Log template:");
-rlog.config.logTemplate = "{time:HH:mm:ss} {level}: {message}";
-rlog.warn("custom template with inline time format", { used: "91%" });
-rlog.config.logTemplate = "[{level}] ";
-rlog.info("template without message placeholder appends the message");
-rlog.config.logTemplate = "T-E-M-P-L-A-T-E | {level}: {message}";
-rlog.info("wide prefix keeps multiline padding aligned\nsecond line");
-rlog.config.logTemplate = defaultLogTemplate;
-
-rlog.info("");
-rlog.info("Progress bar:");
-rlog.progress(10, 100);
-rlog.progress(50, 100);
-rlog.progress(100, 100);
-process.stdout.write("\n");
-
-rlog.info("");
-rlog.info("Exit demo is intentionally disabled to keep the demo process alive.");
-// rlog.exit("Force to exit after saving logs");

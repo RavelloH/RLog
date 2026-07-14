@@ -2,6 +2,8 @@
 
 ## 3.0.0
 
+Requires Node.js 20 or newer.
+
 - Added target-based `screen`, `text`, and `jsonl` facades with consistent console-style `...args` level methods.
 - Added `rlog.at()`, `rlog.screen.at()`, `rlog.text.at()`, and `rlog.jsonl.at()` for explicit timestamps.
 - Added JSONL-only logging and structured events.

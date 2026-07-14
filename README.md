@@ -1,36 +1,37 @@
 # RLog
 
-RLog is a zero-runtime-dependency TypeScript logging and stream-capture library for Node.js CLI tools, automation workflows, build systems, and hardware tooling. It provides console-compatible formatting, independent screen/text/JSONL targets, structured events, Capture, deterministic shutdown, privacy redaction, and size-based file rotation.
+RLog 是面向 Node.js CLI、自动化流程、构建工具和硬件工具的 TypeScript 日志与流捕获库。它提供与 `console` 一致的参数格式化、屏幕/文本/JSONL 多目标输出、结构化事件、上下文、隐私脱敏、进程与流 Capture、可靠的关闭生命周期，以及零运行时第三方依赖。
 
-## Features
+## 特性
 
-- Console-style `...args` logging on every facade
-- Independent `screen`, `text`, and JSON Lines (`jsonl`) targets
-- Context, child loggers, metadata, and structured events
-- Process, text-stream, and binary-stream Capture
-- `flush()`, idempotent `close()`, and coordinated `exit()` lifecycle handling
-- Safe JSON serialization and `blockedWordsList` / `redactKeys` privacy controls
-- Size-based text and JSONL rotation using Node.js built-ins
+- 所有日志方法支持 Node.js `console` 风格的 `...args` 格式化
+- 独立的 `screen`、`text` 和 JSON Lines `jsonl` 输出目标
+- 日志等级、时间模板、时区、彩色与自定义着色规则
+- Context、Child Logger、延迟提交 Metadata 与结构化 Event
+- 文本、进程和二进制流 Capture，支持 SHA-256、ANSI 清理与 UTF-8 跨 chunk 解码
+- `flush()`、幂等 `close()`、有序 `exit()` 生命周期
+- `blockedWordsList` 文本遮蔽与 `redactKeys` 结构化字段脱敏
+- 文本和 JSONL 的按大小轮转
 
-## Install
+## 安装
+
+RLog v3 需要 Node.js 20 或更高版本。
 
 ```bash
 npm install rlog-js
 ```
 
-CommonJS remains supported:
-
 ```js
+// CommonJS
 const Rlog = require("rlog-js");
 ```
 
-TypeScript default imports remain supported:
-
 ```ts
+// TypeScript
 import Rlog from "rlog-js";
 ```
 
-## Quick start
+## 快速开始
 
 ```js
 const Rlog = require("rlog-js");
@@ -38,97 +39,223 @@ const Rlog = require("rlog-js");
 const rlog = new Rlog({
   logFilePath: "./logs/app.log",
   jsonlFilePath: "./logs/events.jsonl",
+  context: { service: "flasher" },
 });
 
 rlog.info("connected to %s", "COM9");
 rlog.success("flash complete in %dms", 42);
+rlog.jsonl.event("flash.completed", { durationMs: 42 });
+
 await rlog.close();
 ```
 
-## Log levels
+## 日志方法与格式化
 
-`trace`, `debug`, `info`, `success`, `warn` / `warning`, `error`, and `fatal` are available on the root logger and all target facades. `log(...args)` infers a level from the rendered message.
+根 Logger、`screen`、`text` 和 `jsonl` 都提供以下方法：
 
-All level methods use Node.js console formatting semantics:
+```js
+rlog.trace(...args);
+rlog.debug(...args);
+rlog.info(...args);
+rlog.success(...args);
+rlog.warn(...args);
+rlog.warning(...args);
+rlog.error(...args);
+rlog.fatal(...args);
+```
+
+参数使用 Node.js 的 `util.formatWithOptions()` 语义，支持 `%s`、`%d`、`%j`、对象、`Error`、循环引用以及自定义 inspect：
 
 ```js
 rlog.info("device=%s retries=%d", "controller", 2);
-rlog.screen.warn("unexpected value", { received: 12 });
+rlog.warn("unexpected response", { code: 503, retryable: true });
+rlog.error(new Error("port unavailable"));
 ```
 
-## Output targets
-
-The root facade writes to every configured target. A target facade writes only to that target.
+`log(...args)` 会依据文本中的常见关键词自动选择 `info`、`success`、`warn` 或 `error` 等级：
 
 ```js
-rlog.info("everywhere");        // screen + text + jsonl
-rlog.screen.info("terminal");  // screen only
-rlog.text.info("plain file");  // text only
-rlog.jsonl.info("structured"); // JSONL only
+rlog.log("upload done");
+rlog.log("connection failed");
 ```
 
-`rlog.file` is a deprecated compatibility alias for `rlog.text`; both are the same instance (`rlog.file === rlog.text`). Existing `file.init()`, `file.logStream`, `file.writeLog()`, and `file.writeLogToStream()` remain available. Prefer `rlog.text.init()`, `rlog.text.stream`, and `rlog.text.writeRaw()` in new code.
+等级阈值从低到高为 `trace`、`debug`、`info` / `success`、`warn`、`error`、`fatal`、`off`。`warning` 是 `warn` 的同义方法。
 
-## Custom time
+## 输出目标
 
-Bind a timestamp explicitly with `at()`. It is lightweight and shares the logger's Dispatcher, sinks, streams, configuration, and lifecycle.
+根 Logger 会写入所有已配置目标；目标 Logger 只写入自己的目标。
+
+| 调用 | screen | text | jsonl |
+| --- | :---: | :---: | :---: |
+| `rlog.info("...")` | ✓ | ✓ | ✓ |
+| `rlog.screen.info("...")` | ✓ | | |
+| `rlog.text.info("...")` | | ✓ | |
+| `rlog.jsonl.info("...")` | | | ✓ |
 
 ```js
-const when = new Date("2026-07-14T10:00:00Z");
-rlog.at(when).info("device=%s state=%s", "controller", "ready");
-rlog.screen.at(when).info("screen only");
-rlog.text.at(when).info("text only");
-rlog.jsonl.at(when).info("JSONL only");
+rlog.info("visible everywhere");
+rlog.screen.info("terminal only");
+rlog.text.info("plain text only");
+rlog.jsonl.info("JSONL only");
 ```
 
-The second parameter to a level method is now always a normal log argument: `rlog.screen.info("value", 123)` renders `value 123`.
+### Screen
 
-## Context, child loggers, and metadata
-
-```js
-const child = rlog.child({ device: "controller" });
-child.text.info("connected").meta("port", "COM9");
-child.jsonl.event("device.connected", { port: "COM9" }).meta({ requestId: "req-1" });
-```
-
-Metadata attaches until the dispatch microtask commits the entry. Calling `.meta()` afterwards throws `LogEntryAlreadyCommittedError`, as in v2.
-
-## Structured events and JSONL
-
-JSONL records keep v2 field names and add an `id` field:
-
-```json
-{"id":1,"timestamp":"2026-07-14T10:00:00.000Z","level":"info","message":"Device connected","args":[],"context":{},"meta":{},"event":null}
-```
-
-`rlog.jsonl.event()` writes only JSONL. JSON serialization safely handles BigInt, Date, Error (including causes), Buffer, undefined, Symbol, Function, circular references, depth limits, and redaction without mutating user objects.
-
-## Redaction
-
-Use `blockedWordsList` to mask rendered text and `redactKeys` to mask structured metadata/JSONL fields.
+`screenOutput` 可为 `"stdout"`、`"stderr"`、`"none"` 或任何 Node.js `Writable`：
 
 ```js
 const rlog = new Rlog({
-  blockedWordsList: ["secret"],
-  redactKeys: ["password", "token"],
+  screenOutput: "stderr",
+  screenLogLevel: "warn",
 });
 ```
 
-## Capture
-
-Capture APIs are unchanged:
+屏幕输出支持颜色、宽字符对齐、多行缩进和进度条：
 
 ```js
-const processResult = await rlog.capture.process(child, { stdoutDisplay: "info" });
-const streamHandle = rlog.capture.stream(readable, { file: "./logs/source.log", timestampLines: true });
-const binaryHandle = rlog.capture.binary(readable, { file: "./logs/data.bin", computeSha256: true });
+rlog.progress(35, 100);
 ```
 
-See [Capture details](docs/capture.md). Closing a logger settles active Capture work but never kills a captured child process.
+### Text
 
-## File rotation
+配置 `logFilePath` 后，文本目标会写入格式化日志：
 
-Rotation is disabled by default and applies only to normal text and JSONL sinks, never Capture files.
+```js
+const rlog = new Rlog({ logFilePath: "./logs/app.log" });
+rlog.text.info("plain text record");
+
+// 按需初始化或直接写入原始文本
+rlog.text.init();
+await rlog.text.writeRaw("raw line\n");
+const stream = rlog.text.stream;
+```
+
+`rlog.file` 是 `rlog.text` 的弃用别名，两者指向同一对象。请在新代码中使用 `text`。
+
+### JSONL
+
+配置 `jsonlFilePath` 后，每条记录写为一行独立 JSON：
+
+```js
+const rlog = new Rlog({ jsonlFilePath: "./logs/events.jsonl" });
+rlog.jsonl.info("device=%s", "controller");
+```
+
+输出字段：
+
+```json
+{
+  "id": 1,
+  "timestamp": "2026-07-14T10:00:00.000Z",
+  "level": "info",
+  "message": "Device connected",
+  "args": [],
+  "context": {},
+  "meta": {},
+  "event": null
+}
+```
+
+JSONL 仅写入 JSONL 文件，不会显示到终端或写入文本文件。
+
+显式时间会原样保留：`Date` 写为 ISO 字符串；数字、字符串、布尔值和 `null` 保持 JSON 值；`bigint` 写为如 `"9n"` 的安全字符串；`undefined` 写为 `"[undefined]"`。因此同一条记录在 text 和 JSONL 中不会拥有不同的时间含义。
+
+## 时间、模板与时区
+
+用 `at(timestamp)` 为一次或多次调用绑定明确时间。它只创建轻量 facade，不会创建新的文件流或 Dispatcher。
+
+```js
+const time = new Date("2026-07-14T10:00:00Z");
+
+rlog.at(time).info("all targets");
+rlog.screen.at(time).info("screen");
+rlog.text.at(time).info("text");
+rlog.jsonl.at(time).info("jsonl");
+```
+
+日志参数始终是普通的 `...args`：
+
+```js
+rlog.screen.info("value", 123); // 输出 value 123
+```
+
+`logTemplate` 可使用 `{time}`、`{time:FORMAT}`、`{level}`、`{type}` 与 `{message}`：
+
+```js
+const rlog = new Rlog({
+  timezone: "Asia/Shanghai",
+  timeFormat: "YYYY-MM-DD HH:mm:ss.SSS Z",
+  logTemplate: "[{time}][{level}] {message}",
+});
+```
+
+支持 `YYYY`、`MM`、`DD`、`HH`、`mm`、`ss`、`SSS`、`Z`、`ZZ`、`ddd`、`MMMM`、`A` 等日期 token，也支持 `timestamp`、`ISO`、`GMT`、`UTC` 作为时间格式。
+
+## Context、Child Logger 与 Metadata
+
+`context` 会附加到该 Logger 的每条记录。Child Logger 合并父 context，并共享配置、输出 Sink、Capture、写入队列与关闭生命周期。
+
+```js
+const rlog = new Rlog({ context: { service: "flasher" } });
+const device = rlog.child({ device: "controller" });
+
+device.info("connected");
+device.text.info("port opened");
+device.jsonl.info("ready");
+```
+
+每个日志调用都会返回 `LogEntry`，可在当前 microtask 内附加 metadata：
+
+```js
+rlog.info("connected").meta({ port: "COM9", baudRate: 115200 });
+rlog.text.info("connected").meta("port", "COM9");
+```
+
+记录提交后不能再修改 metadata，届时 `.meta()` 会抛出 `LogEntryAlreadyCommittedError`。
+
+`screenMetadataOutput` 与 `fileMetadataOutput` 取值为 `"none"`、`"inline"` 或 `"block"`：
+
+```js
+const rlog = new Rlog({
+  screenMetadataOutput: "inline",
+  fileMetadataOutput: "block",
+});
+```
+
+## 结构化事件
+
+`event(type, data?, options?)` 将事件类型和数据加入日志记录。`options` 支持 `level` 和展示用 `message`。
+
+```js
+rlog.event("device.connected", { port: "COM9" }, {
+  level: "success",
+  message: "device connected",
+}).meta({ requestId: "req-1" });
+
+rlog.jsonl.event("flash.completed", { durationMs: 42 });
+```
+
+事件数据参与文本 metadata 渲染，并以 `event: { type, data }` 写入 JSONL。
+
+## 隐私与安全序列化
+
+`blockedWordsList` 会替换消息与 JSON 中匹配的文本；`redactKeys` 会将对象中匹配的键值替换为 `[REDACTED]`，键名不区分大小写。
+
+```js
+const rlog = new Rlog({
+  blockedWordsList: ["secret", "AKIA[0-9A-Z]+"],
+  redactKeys: ["password", "token", "authorization"],
+});
+
+rlog.info("token=secret");
+rlog.jsonl.event("request", { authorization: "Bearer secret" });
+```
+
+JSONL 与 metadata 序列化不会修改原对象，并安全处理 `BigInt`、`Date`、`Error` 和 `Error.cause`、`Buffer`、`undefined`、`Symbol`、函数、循环引用以及过深对象。
+
+## 文件轮转
+
+文本和 JSONL 可分别按大小轮转；默认关闭。`maxFiles` 是保留的历史文件数量，不包括当前活动文件。
 
 ```js
 const rlog = new Rlog({
@@ -139,61 +266,197 @@ const rlog = new Rlog({
 });
 ```
 
-See [rotation behavior](docs/rotation.md).
+文件命名为：
 
-## flush, close, and exit
+```text
+app.log       # 当前文件
+app.log.1     # 最新历史文件
+app.log.2
+```
 
-`await rlog.flush()` waits for queued records, screen writes, configured sink writes, active Capture data, and rotations; the logger remains usable afterwards. `await rlog.close()` is idempotent, rejects new user records once closing begins, settles Capture, flushes and closes sinks, then delivers deferred file errors.
+一条记录始终完整写入单个文件；超出阈值的单条记录允许完整写入新文件。轮转与写入串行执行，`flush()` 和 `close()` 都会等待其完成。Capture 文件不参与轮转。
 
-`rlog.exit(message)` records `EXIT`, runs registered `onExit()` listeners in order, closes RLog resources, and exits with status `1` if a listener or close operation fails or times out.
+## Capture
 
-## File errors
+### 文本流
 
-`fileErrorPolicy` accepts `throw` (default), `disable`, `stderr`, and `ignore`. Failures call `onFileError(error, context)` once. Context includes the target (`text`, `jsonl`, or `capture`) and operation (`open`, `write`, `flush`, `close`, or `rotate`). A failed target is disabled; other targets continue logging.
+`capture.stream()` 递增读取文本流，支持编码、展示等级、文件输出、ANSI 清理、逐行时间戳、SHA-256 与标记事件。
 
-## Complete configuration
+```js
+const handle = rlog.capture.stream(readable, {
+  file: "./logs/serial.log",
+  encoding: "utf8",
+  displayLevel: "info",
+  stripAnsiInFile: true,
+  timestampLines: true,
+  computeSha256: true,
+});
+
+handle.mark("flash-start", { image: "firmware.bin" });
+await handle.flush();
+const result = await handle.done;
+// result: bytes, chunks, lines, sha256, startedAt, endedAt, durationMs ...
+```
+
+未换行尾部、UTF-8 跨 chunk 字符和 ANSI 序列都会正确收尾。`handle.close()` 可手动结束 Capture。
+
+> 安全提示：Capture 文件保存的是外部流的原始内容（或由 Capture 选项要求的最小转换），不会自动应用 `blockedWordsList` 或 `redactKeys`。它们可能包含 token、密码、设备输出或其他敏感信息。调用者应负责文件权限、保存位置和清理策略；Capture 文件也不参与普通日志轮转。
+
+### 二进制流
+
+`capture.binary()` 将原始字节写入文件，可选 SHA-256：
+
+```js
+const handle = rlog.capture.binary(binaryReadable, {
+  file: "./logs/firmware.bin",
+  computeSha256: true,
+});
+
+const result = await handle.done;
+```
+
+### 子进程
+
+`capture.process()` 同时处理 stdout/stderr，可分别设置文件、显示等级，并控制 ANSI 与原始字节保留：
+
+```js
+const { spawn } = require("node:child_process");
+
+const child = spawn("tool", ["--flash", "firmware.bin"]);
+const result = await rlog.capture.process(child, {
+  stdoutFile: "./logs/tool.stdout.log",
+  stderrFile: "./logs/tool.stderr.log",
+  stdoutDisplay: "info",
+  stderrDisplay: "warn",
+  preserveRawBytes: false,
+  stripAnsiInFiles: true,
+  encoding: "utf8",
+  computeSha256: true,
+});
+
+console.log(result.exitCode, result.signal, result.stdoutSha256);
+```
+
+关闭 Logger 会使活动 Capture settle，但不会杀死被捕获的子进程。
+
+## 生命周期与退出
+
+`flush()` 等待已排队记录、屏幕写入、全部 Sink、活动 Capture 数据和轮转；完成后可继续写日志。
+
+```js
+await rlog.flush();
+rlog.info("continue after flush");
+```
+
+`close()` 幂等。关闭开始后新的用户日志会抛出 `RLogClosedError`，已排队日志和 Capture 收尾会被处理完毕。
+
+```js
+await rlog.close();
+await rlog.close();
+```
+
+`onExit()` 注册退出前任务；`exit()` 写入 EXIT 记录、按注册顺序执行任务、关闭资源并退出进程。任务失败或超时会以状态码 `1` 退出。
+
+```js
+rlog.onExit(async () => {
+  await saveCheckpoint();
+});
+
+rlog.exit("finished");
+```
+
+## 文件错误策略
+
+`fileErrorPolicy` 决定文本、JSONL、Capture 文件或轮转失败时的行为：
+
+| 值 | 行为 |
+| --- | --- |
+| `"throw"` | 在后续 `flush()` 或 `close()` 交付错误 |
+| `"disable"` | 禁用失败目标，其他目标继续写入 |
+| `"stderr"` | 写入标准错误并禁用失败目标 |
+| `"ignore"` | 静默禁用失败目标 |
+
+`onFileError` 可接收失败文件、目标和操作：
+
+```js
+const rlog = new Rlog({
+  fileErrorPolicy: "stderr",
+  onFileError(error, context) {
+    console.error("RLog file error", context.output, context.operation, error);
+  },
+});
+```
+
+`context.output` 为 `text`、`jsonl` 或 `capture`；`context.operation` 为 `open`、`write`、`flush`、`close` 或 `rotate`。
+
+## 配置
 
 ```ts
-new Rlog({
+const rlog = new Rlog({
   enableColorfulOutput: true,
   logFilePath: "./logs/app.log",
   jsonlFilePath: "./logs/events.jsonl",
+  timeFormat: "YYYY-MM-DD HH:mm:ss.SSS",
+  timezone: "Asia/Shanghai",
+  logTemplate: "[{time}][{level}] {message}",
+  blockedWordsList: [],
+  screenLength: 120,
+  autoInit: true,
+  silent: false,
+  customColorRules: [{ reg: "COM\\d+", color: "cyan" }],
   logLevel: "info",
   screenLogLevel: "info",
   fileLogLevel: "debug",
   jsonlLogLevel: "info",
   screenOutput: "stdout",
+  textRotation: { maxBytes: 10 * 1024 * 1024, maxFiles: 5 },
+  jsonlRotation: false,
+  context: { service: "flasher" },
   screenMetadataOutput: "none",
   fileMetadataOutput: "block",
-  timeFormat: "YYYY-MM-DD HH:mm:ss.SSS",
-  timezone: "Asia/Shanghai",
-  context: { service: "flasher" },
-  blockedWordsList: [],
   redactKeys: ["token"],
-  textRotation: false,
-  jsonlRotation: false,
+  readLogLevelFromArgv: true,
+  readLogLevelFromEnv: true,
+  logLevelArgumentName: "--log-level",
+  logLevelEnvironmentName: "RLOG_LEVEL",
   fileErrorPolicy: "throw",
+  onFileError: (error, context) => {},
+  exitListenerTimeoutMs: 5000,
+  exitCloseTimeoutMs: 5000,
 });
 ```
 
-## API reference
+`setConfig()` 立即更新当前实例。`setConfigGlobal()` 会立即更新所有现有实例，并成为后续新实例的默认值；传入的 rotation 配置会被复制，后续修改原对象不会影响 RLog：
 
-- Root: level methods, `log`, `event`, `at`, `child`, `flush`, `close`, `progress`, `onExit`, `exit`
-- Target facade: level methods, `event`, `at`; text/file also exposes its compatibility stream helpers
-- Capture: `capture.process`, `capture.stream`, `capture.binary`
-- Errors: `CaptureError`, `RLogClosedError`, `LogEntryAlreadyCommittedError`
+```js
+rlog.config.setConfig({ logLevel: "debug" });
+rlog.config.setConfigGlobal({ enableColorfulOutput: false });
+```
 
-## Migrating from v2
+启用 `readLogLevelFromArgv` 后可传入 `--log-level=debug` 或 `--log-level debug`；启用 `readLogLevelFromEnv` 后可使用 `RLOG_LEVEL=debug`，名称可通过对应配置项修改。
 
-Read [the v3 migration guide](docs/migration-v3.md) before upgrading. The key behavioral change is replacing the old ambiguous second timestamp argument with `at(timestamp)`.
+## 错误类
 
-## Development and testing
+以下错误类可从包入口获得：
+
+```js
+const {
+  CaptureError,
+  RLogClosedError,
+  LogEntryAlreadyCommittedError,
+} = require("rlog-js");
+```
+
+`CaptureError` 带有 `code`、`cause` 与 `partialResult`，错误代码包括 `CAPTURE_SOURCE_ERROR`、`CAPTURE_FILE_ERROR`、`CAPTURE_DECODE_ERROR` 和 `CAPTURE_ABORTED_BY_LOGGER_CLOSE`。
+
+## 开发
 
 ```bash
 npm ci
 npm run build
 npm test
+npm run test:coverage
 npm pack --dry-run
 ```
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for contribution expectations.
+贡献说明见 [CONTRIBUTING.md](CONTRIBUTING.md)。

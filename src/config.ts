@@ -74,7 +74,7 @@ export class Config {
 
   setConfigGlobal(options?: ConfigOptions): void {
     if (!options) return;
-    Config.globalDefaults = { ...Config.globalDefaults, ...options };
+    Config.globalDefaults = Config.cloneOptions({ ...Config.globalDefaults, ...options });
     for (const instance of Config.instances) instance.setConfig(options);
   }
 
@@ -91,5 +91,13 @@ export class Config {
     if (!value || !Number.isFinite(value.maxBytes) || value.maxBytes <= 0 || !Number.isInteger(value.maxFiles) || value.maxFiles < 0) {
       throw new Error(`${name} must be false or { maxBytes: positive finite number, maxFiles: non-negative integer }`);
     }
+  }
+
+  private static cloneOptions(options: ConfigOptions): ConfigOptions {
+    return {
+      ...options,
+      textRotation: options.textRotation === undefined || options.textRotation === false ? options.textRotation : { ...options.textRotation },
+      jsonlRotation: options.jsonlRotation === undefined || options.jsonlRotation === false ? options.jsonlRotation : { ...options.jsonlRotation },
+    };
   }
 }

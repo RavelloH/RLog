@@ -19,8 +19,8 @@
   ],
   "scripts": {
     "build": "tsc",
-    "test": "npm run build && node --test test/compatibility.test.js test/targets.test.js test/rotation-text.test.js test/rotation-jsonl.test.js",
-    "test:coverage": "npm run build && node --test --experimental-test-coverage test/compatibility.test.js test/targets.test.js test/rotation-text.test.js test/rotation-jsonl.test.js",
+    "test": "npm run build && node --test",
+    "test:coverage": "npm run build && node --test --experimental-test-coverage",
     "demo": "npm run build && node ./demo.js",
     "prepublishOnly": "npm run build"
   },

@@ -31,33 +31,40 @@ type ExitListener = () => void | Promise<void>;
 
 /** A lightweight logger bound to one output target (or the root's all-target scope) and optionally a timestamp. */
 export class TargetLogger {
-  constructor(protected readonly logger: Rlog, protected readonly targets: LogTargets, protected readonly timestamp?: Tostringable) {}
-  trace(...args: unknown[]): LogEntry { return this.logger.writeToTargets("trace", args, this.targets, undefined, this.timestamp); }
-  debug(...args: unknown[]): LogEntry { return this.logger.writeToTargets("debug", args, this.targets, undefined, this.timestamp); }
-  info(...args: unknown[]): LogEntry { return this.logger.writeToTargets("info", args, this.targets, undefined, this.timestamp); }
-  success(...args: unknown[]): LogEntry { return this.logger.writeToTargets("success", args, this.targets, undefined, this.timestamp); }
-  warn(...args: unknown[]): LogEntry { return this.logger.writeToTargets("warn", args, this.targets, undefined, this.timestamp); }
+  constructor(protected readonly logger: Rlog, protected readonly targets: LogTargets, protected readonly timestamp?: Tostringable, protected readonly hasTimestamp = false) {}
+  trace(...args: unknown[]): LogEntry { return this.logger.writeToTargets("trace", args, this.targets, undefined, this.timestamp, this.hasTimestamp); }
+  debug(...args: unknown[]): LogEntry { return this.logger.writeToTargets("debug", args, this.targets, undefined, this.timestamp, this.hasTimestamp); }
+  info(...args: unknown[]): LogEntry { return this.logger.writeToTargets("info", args, this.targets, undefined, this.timestamp, this.hasTimestamp); }
+  success(...args: unknown[]): LogEntry { return this.logger.writeToTargets("success", args, this.targets, undefined, this.timestamp, this.hasTimestamp); }
+  warn(...args: unknown[]): LogEntry { return this.logger.writeToTargets("warn", args, this.targets, undefined, this.timestamp, this.hasTimestamp); }
   warning(...args: unknown[]): LogEntry { return this.warn(...args); }
-  error(...args: unknown[]): LogEntry { return this.logger.writeToTargets("error", args, this.targets, undefined, this.timestamp); }
-  fatal(...args: unknown[]): LogEntry { return this.logger.writeToTargets("fatal", args, this.targets, undefined, this.timestamp); }
+  error(...args: unknown[]): LogEntry { return this.logger.writeToTargets("error", args, this.targets, undefined, this.timestamp, this.hasTimestamp); }
+  fatal(...args: unknown[]): LogEntry { return this.logger.writeToTargets("fatal", args, this.targets, undefined, this.timestamp, this.hasTimestamp); }
   /** Legacy target-local EXIT label. It logs only; use `rlog.exit()` to terminate the process. */
-  exit(...args: unknown[]): LogEntry { return this.logger.writeToTargets("fatal", args, this.targets, "EXIT", this.timestamp); }
+  exit(...args: unknown[]): LogEntry { return this.logger.writeToTargets("fatal", args, this.targets, "EXIT", this.timestamp, this.hasTimestamp); }
   event(type: string, data?: LogMetadata, options: EventOptions = {}): LogEntry {
-    const entry = this.logger.writeToTargets(normalizeLevel(options.level), [options.message ?? type], this.targets, undefined, this.timestamp);
+    const entry = this.logger.writeToTargets(normalizeLevel(options.level), [options.message ?? type], this.targets, undefined, this.timestamp, this.hasTimestamp);
     (entry as LogEntryImpl).setEvent(type, data);
     return entry;
   }
-  at(timestamp: Tostringable): TargetLogger { return new TargetLogger(this.logger, this.targets, timestamp); }
+  at(timestamp: Tostringable): TargetLogger { return new TargetLogger(this.logger, this.targets, timestamp, true); }
+}
+
+/** Static screen facade constructor for `new Rlog.Screen(rlog)`. */
+export class ScreenTargetLogger extends TargetLogger {
+  constructor(logger: Rlog, timestamp?: Tostringable, hasTimestamp = false) { super(logger, new Set<LogTarget>(["screen"]), timestamp, hasTimestamp); }
+  override at(timestamp: Tostringable): ScreenTargetLogger { return new ScreenTargetLogger(this.logger, timestamp, true); }
 }
 
 /** Text target plus v2-compatible file-stream helpers. */
 export class TextTargetLogger extends TargetLogger {
-  constructor(logger: Rlog, timestamp?: Tostringable) { super(logger, new Set<LogTarget>(["text"]), timestamp); }
-  override at(timestamp: Tostringable): TextTargetLogger { return new TextTargetLogger(this.logger, timestamp); }
+  constructor(logger: Rlog, timestamp?: Tostringable, hasTimestamp = false) { super(logger, new Set<LogTarget>(["text"]), timestamp, hasTimestamp); }
+  override at(timestamp: Tostringable): TextTargetLogger { return new TextTargetLogger(this.logger, timestamp, true); }
+  /** @deprecated Advanced escape hatch; direct writes bypass rotation and lifecycle accounting. Use writeRaw(). */
   get stream() { return this.logger.textLogStream; }
-  /** @deprecated Use `stream`. */
+  /** @deprecated Advanced escape hatch; use writeRaw() for managed writes. */
   get logStream() { return this.stream; }
-  init(): void { void this.logger.initText(); }
+  init(): Promise<void> { return this.logger.initText(); }
   writeRaw(text: string): Promise<void> { return this.logger.writeRawText(text); }
   /** @deprecated Use `writeRaw`. */
   writeLogToStream(text: string): Promise<void> { return this.writeRaw(text); }
@@ -68,7 +75,7 @@ export class TextTargetLogger extends TargetLogger {
 export default class Rlog {
   static Config = Config;
   static Toolkit = Toolkit;
-  static Screen = TargetLogger;
+  static Screen = ScreenTargetLogger;
   static File = TextTargetLogger;
   readonly config: Config;
   readonly toolkit: Toolkit;
@@ -99,11 +106,11 @@ export default class Rlog {
         }
       }, (type, data) => { this.event(type, data); });
       if (this.config.autoInit && this.config.logFilePath) {
-        void this.initText();
+        void this.initText().catch(() => undefined);
         if (!this.config.silent) this.writeToTargets("info", [`The log will be written to ${this.config.logFilePath}`], new Set<LogTarget>(["screen"]));
       }
     }
-    this.screen = new TargetLogger(this, new Set<LogTarget>(["screen"]));
+    this.screen = new ScreenTargetLogger(this);
     this.text = new TextTargetLogger(this);
     this.file = this.text;
     this.jsonl = new TargetLogger(this, new Set<LogTarget>(["jsonl"]));
@@ -125,7 +132,7 @@ export default class Rlog {
   }
   event(type: string, data?: LogMetadata, options: EventOptions = {}): LogEntry { return new TargetLogger(this, "all").event(type, data, options); }
   /** Bind an explicit timestamp without allocating another Dispatcher, Config, Sink, or stream. */
-  at(timestamp: Tostringable): TargetLogger { return new TargetLogger(this, "all", timestamp); }
+  at(timestamp: Tostringable): TargetLogger { return new TargetLogger(this, "all", timestamp, true); }
 
   child(context: LogMetadata): Rlog { return new Rlog(undefined, { root: this.root, context: { ...this.currentContext(), ...context } }); }
   onExit(listener: ExitListener): void { this.root.exitListeners.push(listener); }
@@ -145,11 +152,11 @@ export default class Rlog {
   }
 
   /** Internal shared write path used by root, target, timestamp, and Capture facades. */
-  writeToTargets(level: LogLevelInput, args: readonly unknown[], targets: LogTargets, specialLabel?: string, timestamp: Tostringable = new Date()): LogEntry {
+  writeToTargets(level: LogLevelInput, args: readonly unknown[], targets: LogTargets, specialLabel?: string, timestamp?: Tostringable, hasTimestamp = false): LogEntry {
     this.root.dispatcher.assertOpen();
     const normalized = normalizeLevel(level);
     if (normalized === "off") throw new Error("Cannot log with level off");
-    const record: LogRecord = { id: this.root.dispatcher.nextId(), timestamp, level: specialLabel ? "fatal" : normalized, args: [...args], message: this.toolkit.formatConsoleArgs(args), metadata: {}, context: this.currentContext(), targets, committed: false, displayLabel: specialLabel };
+    const record: LogRecord = { id: this.root.dispatcher.nextId(), timestamp: hasTimestamp ? timestamp : new Date(), level: specialLabel ? "fatal" : normalized, args: [...args], message: this.toolkit.formatConsoleArgs(args), metadata: {}, context: this.currentContext(), targets, committed: false, displayLabel: specialLabel };
     this.root.dispatcher.enqueue(record);
     return new LogEntryImpl(record);
   }
@@ -158,7 +165,15 @@ export default class Rlog {
   /** @deprecated Use `writeRawText` through `rlog.text.writeRaw`. */
   async writeRawFile(text: string): Promise<void> { return this.writeRawText(text); }
   get textLogStream() { return this.root.dispatcher.text.file.stream; }
-  async initText(): Promise<void> { if (this.config.logFilePath) { try { await this.root.dispatcher.text.file.init(this.config.logFilePath); } catch { /* deferred according to fileErrorPolicy */ } } }
+  async initText(): Promise<void> {
+    if (!this.config.logFilePath) return;
+    try { await this.root.dispatcher.text.file.init(this.config.logFilePath); }
+    catch (reason) {
+      // ManagedFile has already reported the failure. Throw-policy callers can
+      // observe it immediately; tolerant policies retain the disabled target.
+      if (this.config.fileErrorPolicy === "throw") throw reason;
+    }
+  }
   /** @deprecated Use `initText` through `rlog.text.init`. */
   async initFile(): Promise<void> { return this.initText(); }
 
@@ -178,6 +193,9 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string)
 
 module.exports = Rlog;
 module.exports.default = Rlog;
+module.exports.TargetLogger = TargetLogger;
+module.exports.ScreenTargetLogger = ScreenTargetLogger;
+module.exports.TextTargetLogger = TextTargetLogger;
 module.exports.CaptureError = CaptureError;
 module.exports.RLogClosedError = RLogClosedError;
 module.exports.LogEntryAlreadyCommittedError = LogEntryAlreadyCommittedError;

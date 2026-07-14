@@ -1,5 +1,7 @@
 # Migrating from RLog v2 to v3
 
+RLog v3 requires Node.js 20 or newer.
+
 ## Target facades
 
 `rlog.file` still works, but is deprecated. It is exactly the same facade instance as `rlog.text`:
@@ -33,6 +35,8 @@ rlog.screen.info("ready", someTime);
 
 `at()` accepts the existing `Tostringable` type and returns a lightweight facade that shares all underlying resources.
 
+JSONL preserves explicit timestamps deterministically: `Date` becomes an ISO string; JSON-compatible values remain values; `bigint` becomes an `n`-suffixed string and `undefined` becomes `"[undefined]"`.
+
 ## JSONL
 
 `rlog.jsonl` writes only JSONL: it never writes screen or text output. Existing JSONL fields remain `timestamp`, `level`, `message`, `args`, `context`, `meta`, and `event`; v3 adds numeric `id`.
@@ -47,6 +51,8 @@ The v2 aliases are kept but deprecated:
 | `rlog.file.logStream` | `rlog.text.stream` |
 | `rlog.file.writeLog()` | `rlog.text.writeRaw()` |
 | `rlog.file.writeLogToStream()` | `rlog.text.writeRaw()` |
+
+`rlog.text.stream` and `rlog.file.logStream` remain advanced compatibility escape hatches. Direct writes to their underlying `WriteStream` bypass managed rotation accounting, write ordering, and deferred file-error delivery. Use `rlog.text.writeRaw()` for normal writes.
 
 ## Rotation
 
