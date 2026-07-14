@@ -2,7 +2,8 @@ const assert = require("assert");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-const { spawnSync } = require("child_process");
+const { spawn, spawnSync } = require("child_process");
+const { Readable } = require("stream");
 const { formatWithOptions, inspect } = require("util");
 const Rlog = require("./dist/index.js");
 
@@ -106,14 +107,7 @@ function assertRlogMessage(rlog, method, args, expectedType, message, label) {
 }
 
 function closeLogStream(rlog) {
-  const stream = rlog.file.logStream;
-  if (!stream) return Promise.resolve();
-
-  return new Promise((resolve, reject) => {
-    stream.once("finish", resolve);
-    stream.once("error", reject);
-    stream.end();
-  });
+  return rlog.close();
 }
 
 function runExitChild(body, extraEnv = {}) {
@@ -819,7 +813,146 @@ async function run() {
   );
 }
 
+async function runV22() {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "rlog-v22-test-"));
+  const textFile = path.join(tempDir, "records.log");
+  const jsonlFile = path.join(tempDir, "records.jsonl");
+
+  try {
+    const rlog = new Rlog({
+      autoInit: false,
+      silent: true,
+      enableColorfulOutput: false,
+      screenOutput: "none",
+      logFilePath: textFile,
+      jsonlFilePath: jsonlFile,
+      context: { app: "test", token: "visible" },
+      redactKeys: ["token"],
+    });
+    const child = rlog.child({ device: "controller" });
+    child.info("Payload", { value: 123 }).meta({ requestId: "req-1", token: "hidden" });
+    child.event("stage.completed", { durationMs: 42 }, { level: "success" }).meta("stage", "flash");
+    await rlog.close();
+
+    const text = fs.readFileSync(textFile, "utf8");
+    assert.match(text, /Payload \{ value: 123 \}/, "body object stays in message");
+    assert.match(text, /requestId: 'req-1'/, "metadata is rendered to text files");
+    assert.doesNotMatch(text, /hidden|visible/, "structured keys are redacted in text output");
+    const records = fs.readFileSync(jsonlFile, "utf8").trim().split(/\r?\n/).map((line) => JSON.parse(line));
+    assert.strictEqual(records.length, 2, "JSONL writes one record per line");
+    assert.deepStrictEqual(records[0].context, { app: "test", device: "controller", token: "[REDACTED]" });
+    assert.strictEqual(records[0].meta.requestId, "req-1");
+    assert.strictEqual(records[1].event.type, "stage.completed");
+    assert.strictEqual(records[1].event.data.durationMs, 42);
+
+    const lateEntryRlog = new Rlog({ autoInit: false, silent: true, screenOutput: "none" });
+    const lateEntry = lateEntryRlog.info("late metadata");
+    await lateEntryRlog.flush();
+    assert.throws(() => lateEntry.meta({ tooLate: true }), /already been committed/);
+    await lateEntryRlog.close();
+
+    const lowLevelExit = new Rlog({ autoInit: false, silent: true, screenOutput: "none", logFilePath: path.join(tempDir, "low-exit.log") });
+    lowLevelExit.file.exit("file-only exit");
+    await lowLevelExit.close();
+    assert.match(fs.readFileSync(path.join(tempDir, "low-exit.log"), "utf8"), /\[EXIT\] file-only exit/, "file.exit remains a file-only log operation");
+
+    const levelFile = path.join(tempDir, "levels.log");
+    const levelRlog = new Rlog({ autoInit: false, silent: true, screenOutput: "none", logFilePath: levelFile, screenLogLevel: "off", fileLogLevel: "debug" });
+    levelRlog.trace("trace hidden");
+    levelRlog.debug("debug visible");
+    levelRlog.info("info visible");
+    await levelRlog.close();
+    const levelText = fs.readFileSync(levelFile, "utf8");
+    assert.doesNotMatch(levelText, /trace hidden/);
+    assert.match(levelText, /debug visible/);
+    assert.match(levelText, /info visible/);
+
+    let customOutput = "";
+    const customWritable = new (require("stream").Writable)({ write(chunk, _encoding, callback) { customOutput += chunk.toString(); callback(); } });
+    const outputRlog = new Rlog({ autoInit: false, silent: true, enableColorfulOutput: false, screenOutput: customWritable });
+    outputRlog.info("custom target");
+    await outputRlog.close();
+    assert.match(customOutput, /custom target/, "custom screen target receives logs");
+
+    const originalArgv = process.argv;
+    const originalEnv = process.env.RLOG_LEVEL;
+    process.argv = [...process.argv, "--log-level=error"];
+    process.env.RLOG_LEVEL = "debug";
+    const priorityRlog = new Rlog({ autoInit: false, silent: true, screenOutput: "none", readLogLevelFromArgv: true, readLogLevelFromEnv: true });
+    assert.strictEqual(priorityRlog.config.effectiveLevel("screen"), "error", "argv overrides environment");
+    priorityRlog.config.setConfig({ screenLogLevel: "warn" });
+    assert.strictEqual(priorityRlog.config.effectiveLevel("screen"), "warn", "target level overrides argv");
+    process.argv = originalArgv;
+    if (originalEnv === undefined) delete process.env.RLOG_LEVEL;
+    else process.env.RLOG_LEVEL = originalEnv;
+    await priorityRlog.close();
+
+    const captureRlog = new Rlog({ autoInit: false, silent: true, screenOutput: "none" });
+    const streamCapture = captureRlog.capture.stream(Readable.from([Buffer.from("a\n"), Buffer.from([0xe4, 0xb8]), Buffer.from([0xad, 0x0a])]), { file: path.join(tempDir, "stream.log"), computeSha256: true });
+    const streamResult = await streamCapture.done;
+    assert.strictEqual(streamResult.reason, "end");
+    assert.strictEqual(streamResult.lines, 2, "text capture counts completed lines even when display is disabled");
+    assert.strictEqual(fs.readFileSync(path.join(tempDir, "stream.log"), "utf8"), "a\n中\n");
+    assert.ok(streamResult.sha256, "text capture computes optional SHA-256");
+    const timestampCapture = captureRlog.capture.stream(Readable.from(["line\n", "tail"]), { file: path.join(tempDir, "timestamp.log"), timestampLines: true });
+    await timestampCapture.done;
+    const timestampText = fs.readFileSync(path.join(tempDir, "timestamp.log"), "utf8");
+    assert.match(timestampText, /^\[[^\]]+\] line\r?\n\[[^\]]+\] tail$/, "timestampLines prefixes complete and final lines");
+    const binaryCapture = captureRlog.capture.binary(Readable.from([Buffer.from([0, 1, 2])]), { file: path.join(tempDir, "stream.bin") });
+    const binaryResult = await binaryCapture.done;
+    assert.strictEqual(binaryResult.sha256, "ae4b3280e56e2faf83f414a6e3dabe9d5fbe18976544c05fed121accb85b53fc", "binary SHA-256 is recorded");
+    assert.deepStrictEqual(fs.readFileSync(path.join(tempDir, "stream.bin")), Buffer.from([0, 1, 2]));
+
+    const completedChild = spawn(process.execPath, ["-e", "process.stdout.write('out\\n'); process.stderr.write('err\\n')"]);
+    const completedProcess = await captureRlog.capture.process(completedChild, { stdoutFile: path.join(tempDir, "process-out.log"), stderrFile: path.join(tempDir, "process-err.log"), computeSha256: true });
+    assert.strictEqual(completedProcess.reason, "process-close");
+    assert.strictEqual(completedProcess.exitCode, 0);
+    assert.strictEqual(fs.readFileSync(path.join(tempDir, "process-out.log"), "utf8"), "out\n");
+    assert.strictEqual(fs.readFileSync(path.join(tempDir, "process-err.log"), "utf8"), "err\n");
+
+    const childProcess = spawn(process.execPath, ["-e", "let i=0; setInterval(() => console.log(i++), 5)"]);
+    const processPromise = captureRlog.capture.process(childProcess, { stdoutFile: path.join(tempDir, "process.log") });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    await captureRlog.close();
+    await assert.rejects(processPromise, (error) => error && error.code === "CAPTURE_ABORTED_BY_LOGGER_CLOSE" && error.partialResult.reason === "logger-close");
+    assert.strictEqual(childProcess.exitCode, null, "closing RLog does not terminate the child process");
+    childProcess.kill();
+
+    let fileErrorCalls = 0;
+    const failingRlog = new Rlog({ autoInit: false, silent: true, screenOutput: "none", logFilePath: tempDir, fileErrorPolicy: "throw", onFileError() { fileErrorCalls += 1; } });
+    failingRlog.info("write failure");
+    await assert.rejects(failingRlog.flush());
+    assert.ok(fileErrorCalls >= 1, "file errors are reported before flush rejects");
+    await assert.rejects(failingRlog.close());
+    for (const policy of ["disable", "ignore"]) {
+      const tolerant = new Rlog({ autoInit: false, silent: true, screenOutput: "none", logFilePath: tempDir, fileErrorPolicy: policy });
+      tolerant.info(`policy ${policy}`);
+      await tolerant.flush();
+      await tolerant.close();
+    }
+
+    const exitScript = `
+      const Rlog = require(${JSON.stringify(path.join(__dirname, "dist", "index.js"))});
+      const r = new Rlog({ autoInit: false, silent: true, screenOutput: "none", exitListenerTimeoutMs: 25 });
+      r.onExit(() => { throw new Error("listener failure"); });
+      r.onExit(() => require("fs").writeFileSync(${JSON.stringify(path.join(tempDir, "after-listener"))}, "ran"));
+      r.exit("done");
+    `;
+    const exitResult = spawnSync(process.execPath, ["-e", exitScript], { encoding: "utf8" });
+    assert.strictEqual(exitResult.status, 1, "listener failure produces exit code 1");
+    assert.strictEqual(fs.readFileSync(path.join(tempDir, "after-listener"), "utf8"), "ran", "later exit listeners still execute");
+    const timeoutResult = spawnSync(process.execPath, ["-e", `const Rlog = require(${JSON.stringify(path.join(__dirname, "dist", "index.js"))}); const r = new Rlog({autoInit:false,silent:true,screenOutput:'none',exitListenerTimeoutMs:10}); r.onExit(() => new Promise(() => {})); r.exit('timeout');`], { encoding: "utf8", timeout: 1000 });
+    assert.strictEqual(timeoutResult.status, 1, "listener timeout produces exit code 1");
+    const ordinaryResult = spawnSync(process.execPath, ["-e", `const Rlog = require(${JSON.stringify(path.join(__dirname, "dist", "index.js"))}); new Rlog({silent:true}); throw new Error("ordinary failure");`], { encoding: "utf8" });
+    assert.notStrictEqual(ordinaryResult.status, 0, "ordinary uncaught errors remain failures");
+    assert.match(ordinaryResult.stderr, /ordinary failure/);
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
 run()
+  .then(runV22)
   .then(() => {
     console.log("All RLog compatibility tests passed.");
   })

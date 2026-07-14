@@ -7,22 +7,16 @@
 ## 特性
 
 - 完整的 TypeScript 支持
-- 可设置时区
-- 自定义时间格式
-- 类型着色
-- 字符串着色
-- 敏感词加密
-- 可显示进度条
-- 分别设定某个日志输出到屏幕或文件
-- 平替`console.log`，无缝迁移，自动识别日志等级
-- 多行输出优化
-- rlog.exit()安全退出方法与退出钩子
+- 可设置时区与自定义时间格式
+- 类型着色、字符串着色、敏感词脱敏
+- 进度条、屏幕/文件分流、多行输出优化
+- 平替 `console.log`，自动识别日志等级
+- `rlog.exit()` 安全退出与退出钩子
+- 2.2：metadata、JSONL、child logger、事件、日志等级与流捕获
 
 ![image](https://github.com/user-attachments/assets/bd5e1c3e-b872-4844-9f40-a19587eda847)
 
 ## 安装
-
-使用npm进行安装：
 
 ```shell
 npm install rlog-js
@@ -32,21 +26,12 @@ npm install rlog-js
 
 ### JavaScript
 
-使用rlog-js非常简单，首先导入rlog-js:
-
 ```javascript
 const Rlog = require("rlog-js");
-```
-
-然后创建一个Rlog实例:
-
-```javascript
 const rlog = new Rlog();
 ```
 
 ### TypeScript
-
-rlog-js 完全使用 TypeScript 编写，提供原生的类型支持：
 
 ```typescript
 import Rlog from "rlog-js";
@@ -63,12 +48,7 @@ rlog.warn("This is a warning log");
 
 ### 基础用法
 
-接下来就可以使用各种接口来输出日志了。
-如果你的项目之前一直是用console.log来输出日志，那么直接替换所有`console`为`rlog`即可一步到位。
-
-具体来说，`./demo.js`中有大量对rlog的调用示例，以供查看；`./test.js`提供自动化回归测试。
-
-一个最简单的使用示例如下：
+如果项目之前使用 `console.log`，通常可直接替换为 `rlog.log` 或对应等级方法。`./demo.js` 有完整演示，`./test.js` 提供自动化回归测试。
 
 ```javascript
 const Rlog = require("rlog-js");
@@ -89,46 +69,34 @@ rlog.log("This is an automatically recognized type of log output");
 rlog.warn("This is a warning log");
 rlog.error("This is an error log");
 rlog.success("This is a success log");
-rlog.exit("This is a secure exit method");
 ```
 
 ## 进阶
 
-rlog致力于成为nodejs端最好用的日志系统。以下是一些进阶使用方式：
-
 ### 配置
 
-有三种方法可修改RLog的配置：  
+可在构造时、通过 `setConfig()` / `setConfigGlobal()`，或直接修改 `rlog.config` 设置配置：
 
 ```javascript
-// Apply configuration when creating an instance
-// 创建实例时应用配置
 const rlog = new Rlog({
   logFilePath: "./log.txt",
   timezone: "Asia/Shanghai",
   autoInit: false,
 });
 
-// Use setConfig to set configuration
-// 使用 setConfig 设置配置
 rlog.config.setConfigGlobal({
   blockedWordsList: ["world", "[0-9]{9}"],
 });
-rlog.config.setConfig({
-  silent: true
-})
 
-// Set config directly
-// 直接设置配置
-rlog.config.logFilePath = './log.txt'
-rlog.config.timezone = 'Asia/Shanghai'
+rlog.config.setConfig({ silent: true });
+rlog.config.logFilePath = "./log.txt";
 ```
 
-其中，`setConfig` 用于实例级配置，`setConfigGlobal` 用于当前 Node.js 进程内的全局配置。`setConfigGlobal` 会覆盖当前进程中已经创建的 Rlog 实例，并作为后续实例的默认配置；子进程是独立 Node.js 进程，不会自动继承父进程中的全局配置。
+`setConfig` 只影响当前实例；`setConfigGlobal` 会更新当前进程内已有实例，并成为后续实例的默认配置。子进程不会继承内存中的全局配置。
 
 ### 自动判断日志级别
 
-rlog提供了一个特殊的`rlog.log()`，以平替`console.log`。它使用 Node.js 原生的 `console.log` 参数格式化语义，支持多参数、占位符和对象输出；随后通过关键词匹配，自动确定日志是否属于 `error`、`warning` 或 `success`，否则为 `info`。
+`rlog.log()` 使用 Node.js `console.log` 的多参数与占位符格式化语义，再根据关键词识别 `error`、`warning` 或 `success`：
 
 ```javascript
 rlog.log("a", { b: 1 }, 1);
@@ -137,24 +105,13 @@ rlog.log("user=%s score=%d", "Ravello", 100);
 
 ### 自定义日志模板
 
-可通过 `logTemplate` 控制日志前缀和正文位置。默认模板为：
+默认模板为：
 
 ```javascript
-{
-  logTemplate: "[{time}][{level}] {message}"
-}
+{ logTemplate: "[{time}][{level}] {message}" }
 ```
 
-支持的占位符：
-
-| 占位符                  | 描述                                      |
-| ----------------------- | ----------------------------------------- |
-| `{message}`             | 日志正文                                  |
-| `{level}` / `{type}`    | 日志等级，例如 `INFO`、`WARN`             |
-| `{time}`                | 按 `timeFormat` 和 `timezone` 渲染的时间  |
-| `{time:HH:mm:ss}`       | 在当前模板中临时覆盖时间格式              |
-
-例如：
+支持 `{message}`、`{level}` / `{type}`、`{time}` 和 `{time:HH:mm:ss}`：
 
 ```javascript
 const rlog = new Rlog({
@@ -164,120 +121,69 @@ const rlog = new Rlog({
 rlog.warn("disk usage", { used: "91%" });
 ```
 
-如果模板中没有 `{message}`，日志正文会自动追加到模板末尾。`timeFormat` 仍然保留，用于控制 `{time}` 的默认渲染方式。
-
-当前时间格式由 RLog 内置实现，不依赖外部时间库。支持常用 token：
-
-| Token | 含义 |
-| ----- | ---- |
-| `YYYY` / `YY` | 年 |
-| `MMMM` / `MMM` / `MM` / `M` | 月 |
-| `DD` / `D` | 日 |
-| `HH` / `H` | 24 小时 |
-| `hh` / `h` | 12 小时 |
-| `mm` / `m` | 分钟 |
-| `ss` / `s` | 秒 |
-| `SSS` / `SS` / `S` | 毫秒 |
-| `A` / `a` | AM/PM |
-| `dddd` / `ddd` / `dd` / `d` | 星期 |
-| `Z` / `ZZ` | 时区偏移 |
-
-也支持 `timestamp`、`ISO`、`GMT`、`UTC` 这几个特殊格式值，以及 `[literal]` 形式的字面量。
+没有 `{message}` 时，正文会自动追加。时间格式支持 `YYYY`、`MM`、`DD`、`HH`、`mm`、`ss`、`SSS`、`A/a`、星期、`Z/ZZ`，以及 `timestamp`、`ISO`、`GMT`、`UTC` 和 `[literal]`。
 
 ### 仅在屏幕/文件中输出
 
-有些时候，日志输出并不一定要做到屏幕显示与文件同步。  
-例如，要显示某个操作的进度(eg:11/100 11%)，就适合只显示在屏幕上而不应被写入文件中。  
-而大段的错误信息，例如某网页/api请求后返回了错误的状态码，你可以仅在屏幕上显示一个大致的错误信息，而在日志文件中输出整个返回的响应，方便定位错误的同时保证输出的整洁性。  
-
 ```javascript
 rlog.info("This will be shown both screen and file");
-rlog.file.info("file only")
-rlog.screen.info("screen only")
+rlog.file.info("file only");
+rlog.screen.info("screen only");
 ```
 
-注：file与screen方式不提供自动判断类型的.log()方法，毕竟如果使用这个特性你肯定知道自己log的类型是什么。
+`file` 与 `screen` 不提供自动判断类型的 `.log()` 方法。
 
-### 强制退出
+### 强制退出与退出钩子
 
-日志系统免不了与错误打交道，rlog提供了一个 `rlog.exit(message)`，你可以轻松的通过调用此函数来安全终止程序的运行。调用后，会在屏幕与文件中记录错误信息，然后阻塞进程，直到日志保存完后退出。  
-不推荐使用`process.exit`的方法来关闭进程。由于文件日志写入是异步的，直接这样退出会导致日志无法成功保存，请使用`rlog.exit`来退出。  
-
-### 退出钩子
-
-很多程序在错误的时候会返回点什么统一的提示，例如给个Github Issue地址或者文档地址；或者完成什么配置保存工作或者关闭文件之类的事。显然每个错误的地方都写一条太麻烦了，你可以通过注册一个统一的 `onExit`，在调用 `rlog.exit()`之前做你想要的事。
+`rlog.exit(message)` 会记录 EXIT、串行执行 `onExit` hook、关闭 RLog 创建的流，随后终止进程。正常完成退出码为 0；hook 或关闭失败、超时时为 1。
 
 ```javascript
-rlog.onExit(() => {
+rlog.onExit(async () => {
+  await saveConfiguration();
   rlog.warn("rlog.exit() called and event triggered.");
 });
+
+rlog.exit("This is a secure exit method");
 ```
+
+hook 的默认超时为 5000ms，可通过 `exitListenerTimeoutMs`、`exitCloseTimeoutMs` 调整。长期运行服务如不应退出，请使用 `fatal()` 与 `await rlog.flush()`。
 
 ### 字符串着色
 
-配置`customColorRules`来实现字符串的着色。支持正则表达式。  
+配置 `customColorRules` 实现字符串着色，规则支持正则表达式：
 
-```js
-rlog.setConfig({
-    customColorRules: [
-       {
-          reg: "[a-zA-z]+://[^\\s]*",
-          color: "cyan",
-        },
-    ],
+```javascript
+rlog.config.setConfig({
+  customColorRules: [
+    { reg: "[a-zA-z]+://[^\\s]*", color: "cyan" },
+  ],
 });
 ```
 
-支持的颜色：  
-![image](https://github.com/user-attachments/assets/d354c492-c6cb-42ea-9357-5bfd26d26589)
+支持 `red`、`green`、`yellow`、`blue`、`magenta`、`cyan`、`gray`。
 
 ### 敏感词加密
 
-配置`blockedWordsList`来实现敏感词的加密，或者说，日志脱敏。支持正则表达式。  
+`blockedWordsList` 用于文本和格式化值的脱敏，支持正则表达式：
 
-```js
-rlog.setConfig({
-    blockedWordsList: [
-       "password",
-       "[0-9]{9}"
-    ],
+```javascript
+rlog.config.setConfig({
+  blockedWordsList: ["password", "[0-9]{9}"],
 });
 ```
 
-你也可以在碰见敏感词的时候，就将其push到`rlog.config.blockedWordsList`中。
-
 ### 进度条
 
-在屏幕上显示一个进度条真是太酷了。你可以简单的调用 `rlog.progress(num, max);`，rlog会自动计算比例，并显示一个进度条。  
-多次调用porgress时，屏幕上只会保留最后一个进度条。
-
-```js
-const Rlog = require("rlog-js");
+```javascript
 const rlog = new Rlog();
-
-rlog.log('当一个progress单独出现时，不会影响上下文')
-rlog.progress(168,1668)
-rlog.log('当更多progress一块出现时，屏幕只显示最新的')
-
-let i = 0
-let a = setInterval(()=>{
-    i +=1
-    if (i == 234) {
-        clearImmediate(a)
-        process.exit()
-    }
-    rlog.progress(i,233)
-},10)
-
+rlog.progress(168, 1668);
 ```
 
-![progess](https://github.com/RavelloH/RLog/assets/68409330/a699236a-ada8-427a-943e-e9bee0ab9c68)
-
-进度条只会在screen中输出，随便调用，不会污染日志。
+进度条仅输出到 screen，不写入普通日志文件；它会遵循 `screenOutput`。非 TTY 输出时会使用稳定的新行输出。
 
 ### 多行输出
 
-rlog会自动对多行内容进行缩进，保持第二行及后续行与日志正文对齐：
+RLog 自动缩进正文的第二行及之后的行：
 
 ```javascript
 rlog.info(`line1
@@ -289,216 +195,175 @@ rlog.info("payload", {
 });
 ```
 
-### 自动初始化
+### 自动初始化与静默模式
 
-通常情况下，rlog会在创建实例时自动初始化日志文件。  
-可在一些特殊情况下，例如Next.js 的构建流程会在多个阶段甚至子进程/线程中多次加载并实例化日志库，会导致日志文件被多次创建。  
-在这种情况下，你可以通过设置`autoInit`为false来禁用自动初始化。  
-在没有自动初始化的情况下，rlog也会在被首次调用时自行初始化。  
-如果你想手动控制初始化的时机，可以在创建实例后调用`rlog.file.init()`来初始化日志文件。  
+默认会在设置 `logFilePath` 时初始化文件。可通过 `autoInit: false` 延迟，并手动调用 `rlog.file.init()`；`silent: true` 会隐藏自动初始化提示。
 
-### 静默模式
+## 2.2 新功能
 
-rlog会自动输出一些信息，例如初始化日志文件的路径。  
-你可以通过设置`silent`为true来启用静默模式，让rlog只输出你手动调用的日志。
+### 日志等级与输出目标
+
+新增 `trace()`、`debug()`、`fatal()`；等级从低到高为 `trace`、`debug`、`info` / `success`、`warn`、`error`、`fatal`、`off`。
+
+```javascript
+const rlog = new Rlog({
+  logFilePath: "./logs/app.log",
+  screenOutput: "stderr",
+  screenLogLevel: "warn",
+  fileLogLevel: "debug",
+});
+
+rlog.debug("Only file");
+rlog.warn("Screen and file");
+```
+
+`screenOutput` 支持 `"stdout"`（默认）、`"stderr"`、`"none"` 或任意 Node Writable。目标等级优先级为：目标等级 > argv > 环境变量 > `logLevel` > `info`。
+
+```javascript
+new Rlog({
+  readLogLevelFromArgv: true,
+  readLogLevelFromEnv: true,
+});
+// node app.js --log-level=warning
+// RLOG_LEVEL=debug node app.js
+```
+
+### 链式 metadata 与 JSONL
+
+正文对象不会被自动当作 metadata；请显式调用 `.meta()`：
+
+```javascript
+const rlog = new Rlog({
+  logFilePath: "./app.log",
+  jsonlFilePath: "./events.jsonl",
+  redactKeys: ["token", "authorization", "apiKey"],
+});
+
+rlog
+  .info("Device connected", { retry: 1 })
+  .meta("device", "controller")
+  .meta({ port: "COM9", token: "secret" });
+```
+
+screen 默认不显示 metadata；文本文件默认以块显示；JSONL 总是保存分离的 `context` 与 `meta`。JSONL 会安全处理 `BigInt`、`Date`、`Error`、`Buffer`、`undefined`、`Symbol`、函数与循环引用。
+
+### Child logger 与事件
+
+```javascript
+const root = new Rlog({ context: { app: "benchpilot" } });
+const deviceLog = root.child({ device: "controller" });
+
+deviceLog.info("Ready").meta({ port: "COM9" });
+deviceLog.event("stage.completed", { durationMs: 4821 }, {
+  level: "success",
+});
+```
+
+child logger 继承 context，并与根实例共享队列、配置、流和生命周期。合并顺序为父 context → child context → `.meta()`。
+
+### flush 与 close
+
+```javascript
+await rlog.flush(); // 等待已排队日志与 capture 已接收的数据
+await rlog.close(); // flush 后结束 RLog 创建的流
+```
+
+`flush()` 后仍可记录；`close()` 幂等，关闭后写入会抛出 `RLogClosedError`。
+
+### Capture
+
+```javascript
+const { spawn } = require("node:child_process");
+
+const child = spawn("node", ["script.js"]);
+const result = await rlog.capture.process(child, {
+  stdoutFile: "./logs/build.stdout.log",
+  stderrFile: "./logs/build.stderr.log",
+  stdoutDisplay: "debug",
+  stderrDisplay: "warn",
+});
+```
+
+也支持文本和二进制流：
+
+```javascript
+const text = rlog.capture.stream(serialPort, {
+  file: "./logs/controller.serial.log",
+  displayLevel: "debug",
+});
+
+const binary = rlog.capture.binary(binaryStream, {
+  file: "./logs/controller.raw.bin",
+});
+```
+
+capture 使用增量写入，不会将整个流载入内存。binary 默认计算 SHA-256。capture 原始文件不会自动脱敏，请自行保护敏感数据。根 logger 在子进程结束前关闭时，会停止捕获并关闭 capture 文件，但不会 kill 子进程；对应 Promise 会以 `CaptureError` reject。
+
+### 文件错误策略
+
+```javascript
+new Rlog({
+  fileErrorPolicy: "throw", // throw | disable | stderr | ignore
+  onFileError(error, context) {
+    reportStorageError(error, context);
+  },
+});
+```
+
+普通日志调用不会同步抛出稍后发生的文件错误；在 `throw` 策略下，`flush()` 与 `close()` 会交付该错误。其他策略会禁用失败目标，让其余输出继续工作。
 
 ## 接口
 
 ### Rlog
 
-```javascript
-rlog.methodName();
-```
+| 方法 | 描述 |
+| --- | --- |
+| `trace/debug/info/warn/error/success/fatal(...args)` | 记录相应等级；普通方法返回可链式 `.meta()` 的 `LogEntry` |
+| `log(...args)` | 自动识别 success / warning / error |
+| `event(type, data?, options?)` | 记录结构化事件 |
+| `child(context)` | 创建共享资源的 child logger |
+| `flush()` / `close()` | 刷新或关闭输出资源 |
+| `progress(num, max)` | 显示进度条 |
+| `exit(message)` | 安全关闭后终止进程 |
 
-Rlog是rlog-js的主类，用于创建日志实例，会自动调用File和Screen方法。
-
-| 方法                | 描述                                                   |
-| ------------------- | ------------------------------------------------------ |
-| `info(message)`     | 打印一条信息日志，并将其写入日志文件                   |
-| `warn(message)`     | 打印一条警告日志，并将其写入日志文件                   |
-| `error(message)`    | 打印一条错误日志，并将其写入日志文件                   |
-| `success(message)`  | 打印一条成功日志，并将其写入日志文件                   |
-| `exit(message)`     | 打印一条退出日志，并将其写入日志文件，然后终止应用程序 |
-| `log(message)`      | 自动识别message类型并调用相关函数                      |
-| `progress(num,max)` | 打印进度条，num为当前进度，max为总进度                 |
+`rlog.screen` 和 `rlog.file` 也提供 `trace/debug/info/warning/warn/error/success/fatal/exit`；它们只写入相应目标。
 
 ### Config
 
-```javascript
-rlog.config;
-```
+| 配置项 | 默认值 | 描述 |
+| --- | --- | --- |
+| `enableColorfulOutput` | `true` | 是否启用彩色输出 |
+| `logFilePath` / `jsonlFilePath` | `undefined` | 文本 / JSONL 文件路径 |
+| `timeFormat` | `YYYY-MM-DD HH:mm:ss.SSS` | 时间格式 |
+| `timezone` | 本地时区 | IANA 时区 |
+| `logTemplate` | `[{time}][{level}] {message}` | 日志模板 |
+| `blockedWordsList` / `redactKeys` | `[]` | 文本 / 结构化脱敏 |
+| `logLevel` | `info` | 基础等级 |
+| `screenLogLevel` / `fileLogLevel` / `jsonlLogLevel` | `undefined` | 目标等级覆盖 |
+| `screenOutput` | `stdout` | stdout、stderr、none 或 Writable |
+| `context` | `{}` | 根 logger context |
+| `screenMetadataOutput` / `fileMetadataOutput` | `none` / `block` | metadata 文本渲染 |
+| `autoInit` / `silent` | `true` / `false` | 文件初始化与提示 |
+| `fileErrorPolicy` | `throw` | 文件失败策略 |
 
-Config是一个用于配置rlog-js的类。可设置的项，详见[#配置项](#配置项)。
+`setConfig(obj)` 更新当前实例；`setConfigGlobal(obj)` 更新当前进程中的实例并作为后续默认值。
 
-| 配置项                 | 类型                                  | 默认值                    | 描述                                     |
-| ---------------------- | ------------------------------------- | ------------------------- | ---------------------------------------- |
-| `enableColorfulOutput` | boolean                               | true                      | 是否启用彩色输出                         |
-| `logFilePath`          | string                                | undefined                 | 日志文件的路径，默认表示不将日志写入文件 |
-| `timeFormat`           | string                                | "YYYY-MM-DD HH:mm:ss.SSS" | 时间的格式                               |
-| `timezone`             | string                                | "GMT"                     | 时区                                     |
-| `logTemplate`          | string                                | "[{time}][{level}] {message}" | 日志输出模板                         |
-| `blockedWordsList`     | Array\<string\>                       | []                        | 需要屏蔽的敏感词列表                     |
-| `customColorRules`     | Array\<{reg: string, color: string}\> | 预设规则                  | 自定义的颜色规则列表                     |
-| `screenLength`         | number                                | 自动获取                  | 屏幕输出的最大宽度                       |
-| `silent`               | boolean                               | false                     | 是否启用静默模式                         |
-| `autoInit`             | boolean                               | true                      | 是否自动初始化日志文件                   |
+### Toolkit、Screen 与 File
 
-Config类方法：
-
-| 方法                   | 描述                                               |
-| ---------------------- | -------------------------------------------------- |
-| `setConfig(obj)`       | 根据传入的对象更新配置                             |
-| `setConfigGlobal(obj)` | 根据传入的对象更新配置，并将更新后的配置应用到全局 |
-
-### Toolkit
-
-```javascript
-rlog.toolkit.methodName();
-```
-
-Toolkit是一个工具类，用于提供一些常用的工具函数。
-
-| 方法                         | 描述                                         |
-| ---------------------------- | -------------------------------------------- |
-| `checkLogFile(path)`         | 检查日志文件是否存在，如果不存在则创建该文件 |
-| `colorizeString(str)`        | 根据配置的颜色规则对字符串进行着色           |
-| `formatTime()`               | 根据配置的时间格式和时区生成时间字符串       |
-| `formatConsoleArgs(args)`    | 按 Node.js `console.log` 语义格式化参数      |
-| `formatLogMessage(...)`      | 根据日志模板渲染完整日志行                   |
-| `encryptPrivacyContent(str)` | 对字符串中的敏感内容进行加密                 |
-| `padLines(str, width)`       | 对字符串中除第一行外的每一行进行缩进         |
-
-### Screen
-
-```javascript
-rlog.screen.methodName();
-```
-
-Screen是用于在控制台打印日志的类。调用此方法，将仅在屏幕中输出，不会写入至文件。
-
-| 方法                     | 描述                             |
-| ------------------------ | -------------------------------- |
-| `info(message, time)`    | 打印一条信息日志                 |
-| `warn(message, time)`    | 打印一条警告日志                 |
-| `error(message, time)`   | 打印一条错误日志                 |
-| `success(message, time)` | 打印一条成功日志                 |
-| `exit(message, time)`    | 打印一条退出日志，并终止应用程序 |
-
-### File
-
-```javascript
-rlog.file.methodName();
-```
-
-File是用于将日志写入文件的类。调用此方法，若已设置日志文件路径，将会写入至文件，不会在屏幕输出。
-
-| 方法                     | 描述                                                   |
-| ------------------------ | ------------------------------------------------------ |
-| `init()`                 | 初始化日志文件，如果配置了日志文件路径。不需要手动调用 |
-| `writeLogToStream(text)` | 将日志写入文件流                                       |
-| `writeLog(text)`         | 将日志写入文件                                         |
-| `info(message, time)`    | 写入一条信息日志                                       |
-| `warn(message, time)`    | 写入一条警告日志                                       |
-| `error(message, time)`   | 写入一条错误日志                                       |
-| `success(message, time)` | 写入一条成功日志                                       |
-| `exit(message, time)`    | 写入一条退出日志，并终止应用程序                       |
-
-## 配置项
-
-rlog-js还提供了一些配置选项，可以在创建Rlog实例时进行配置，也可以使用`setConfig()`和`setConfigGlobal()`或者以`rlog.config[config] = <value>`的方式设置。
-
-以下是可用的配置选项及其默认值:
-
-```javascript
-{
-    enableColorfulOutput: true, // 是否启用彩色输出
-    logFilePath: undefined,     // 日志文件路径，如果不设置则不会输出到文件
-    timeFormat: "YYYY-MM-DD HH:mm:ss.SSS", // 时间格式
-    timezone: "GMT",      // 时区
-    logTemplate: "[{time}][{level}] {message}", // 日志输出模板
-    blockedWordsList: [], // 需要屏蔽的词汇列表
-    autoInit: true,       // 是否自动初始化日志文件
-    customColorRules: [   // 自定义颜色规则
-        {
-            reg: "false",
-            color: "red",
-        },
-        {
-            reg: "true",
-            color: "green",
-        },
-        {
-            reg: "((2(5[0-5]|[0-4]\\d))|[0-1]?\\d{1,2})(\\.((2(5[0-5]|[0-4]\\d))|[0-1]?\\d{1,2})){3}",
-            color: "cyan",
-        },
-        {
-            reg: "[a-zA-z]+://[^\\s]*",
-            color: "cyan",
-        },
-        {
-            reg: "\\d{4}-\\d{1,2}-\\d{1,2}",
-            color: "green",
-        },
-        {
-            reg: "\\w+([-+.]\\w+)*@\\w+([-.]\\w+)*\\.\\w+([-.]\\w+)*",
-            color: "cyan",
-        },
-        {
-            reg: "[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}",
-            color: "cyan",
-        },
-        {
-            reg: "(w+)s*:s*([^;]+)",
-            color: "cyan",
-        },
-    ]
-}
-```
-
-关于如何更改配置项，请查看[#配置](#配置)部分。
+`rlog.toolkit` 保留 `formatTime()`、`formatConsoleArgs()`、`formatLogMessage()`、`colorizeString()`、`encryptPrivacyContent()`、`padLines()` 等工具方法。`rlog.file.init()` 可手动初始化文本日志文件。
 
 ## 开发
 
-### 从源码构建
-
-本项目使用 TypeScript 编写，需要先编译才能使用：
-
 ```bash
-# 克隆仓库
 git clone https://github.com/RavelloH/RLog.git
 cd RLog
-
-# 安装依赖
 npm install
-
-# 编译 TypeScript
 npm run build
-
-# 运行测试
 npm test
+npm pack --dry-run
 ```
 
-### 项目结构
-
-```text
-RLog/
-├── src/           # TypeScript 源码
-│   └── index.ts   # 主文件
-├── dist/          # 编译输出 (自动生成)
-│   ├── index.js   # 编译后的 JS
-│   └── index.d.ts # 类型声明文件
-├── test.js        # 测试文件
-└── tsconfig.json  # TypeScript 配置
-```
-
-### 类型安全
-
-使用 TypeScript 重写后，所有潜在的类型错误都在编译期被捕获：
-
-- ✅ 内置 ANSI 颜色输出有明确的类型约束
-- ✅ 配置项有完整的接口定义
-- ✅ 异步操作有正确的 Promise 类型
-- ✅ 所有类方法都有明确的返回类型
+2.1 用户无需修改现有普通日志代码；2.2 的新能力均为可选。不会自动发布 npm。
 
 ## License
 

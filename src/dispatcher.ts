@@ -1,0 +1,114 @@
+import { Config } from "./config";
+import { ConsoleSink, JsonlFileSink, TextFileSink, toError } from "./sinks";
+import { RLogClosedError } from "./types";
+import { Toolkit } from "./toolkit";
+import type { FileErrorContext, LogRecord } from "./types";
+
+type State = "open" | "closing" | "closed";
+
+export class Dispatcher {
+  readonly toolkit: Toolkit;
+  readonly console: ConsoleSink;
+  readonly text: TextFileSink;
+  readonly jsonl: JsonlFileSink;
+  private state: State = "open";
+  private readonly pending: LogRecord[] = [];
+  private work: Promise<void> = Promise.resolve();
+  private scheduled = false;
+  private sequence = 0;
+  private readonly errors: Error[] = [];
+  private closePromise: Promise<void> | undefined;
+  private readonly captures = new Set<{ closeForLogger(): Promise<void>; flush(): Promise<void> }>();
+
+  constructor(readonly config: Config) {
+    this.toolkit = new Toolkit(config);
+    const report = (error: Error, context: FileErrorContext) => this.reportFileError(error, context);
+    this.console = new ConsoleSink(config, this.toolkit);
+    this.text = new TextFileSink(config, this.toolkit, report);
+    this.jsonl = new JsonlFileSink(config, this.toolkit, report);
+  }
+
+  nextId(): number { this.sequence += 1; return this.sequence; }
+  assertOpen(): void { if (this.state !== "open") throw new RLogClosedError(); }
+
+  enqueue(record: LogRecord): void {
+    this.assertOpen();
+    // The default screen format does not include metadata, so it is safe to
+    // retain 2.1's synchronous terminal behavior while file/JSONL waits one
+    // microtask for a chained .meta() call.
+    if (this.config.screenMetadataOutput === "none" && record.destination !== "file") {
+      record.screenWritten = true;
+      void this.console.write(record).catch((reason: unknown) => this.captureError(toError(reason)));
+    }
+    this.pending.push(record);
+    if (!this.scheduled) {
+      this.scheduled = true;
+      queueMicrotask(() => { this.scheduled = false; this.commitPending(); });
+    }
+  }
+
+  private commitPending(): void {
+    const records = this.pending.splice(0);
+    for (const record of records) {
+      record.committed = true;
+      this.work = this.work.then(() => this.dispatch(record)).catch((reason: unknown) => {
+        this.captureError(toError(reason));
+      });
+    }
+  }
+
+  private async dispatch(record: LogRecord): Promise<void> {
+    if (!record.screenWritten) await this.console.write(record);
+    await this.text.write(record);
+    await this.jsonl.write(record);
+  }
+
+  reportFileError(error: Error, context: FileErrorContext): void {
+    try { this.config.onFileError?.(error, context); } catch (callbackError) { this.captureError(toError(callbackError)); }
+    if (this.config.fileErrorPolicy === "stderr") process.stderr.write(`RLog file error (${context.operation}, ${context.output}): ${error.message}\n`);
+    if (this.config.fileErrorPolicy === "throw") this.captureError(error);
+  }
+
+  private captureError(error: Error): void {
+    if (!this.errors.includes(error)) this.errors.push(error);
+  }
+
+  async flush(): Promise<void> {
+    this.commitPending();
+    await this.work;
+    await Promise.all([...this.captures].map((capture) => capture.flush()));
+    await Promise.all([this.text.file.flush(), this.jsonl.file.flush()]);
+    this.throwDeferredErrors();
+  }
+
+  async close(): Promise<void> {
+    if (this.closePromise) return this.closePromise;
+    this.closePromise = this.doClose();
+    return this.closePromise;
+  }
+
+  private async doClose(): Promise<void> {
+    if (this.state === "closed") return;
+    this.state = "closing";
+    await Promise.all([...this.captures].map((capture) => capture.closeForLogger()));
+    this.commitPending();
+    await this.work;
+    const outcomes = await Promise.allSettled([this.text.file.close(), this.jsonl.file.close()]);
+    for (const outcome of outcomes) if (outcome.status === "rejected") this.captureError(toError(outcome.reason));
+    this.state = "closed";
+    this.throwDeferredErrors();
+  }
+
+  async progress(num: number, max: number): Promise<void> { this.assertOpen(); await this.console.progress(num, max); }
+  addCapture(capture: { closeForLogger(): Promise<void>; flush(): Promise<void> }): void { this.captures.add(capture); }
+  removeCapture(capture: { closeForLogger(): Promise<void>; flush(): Promise<void> }): void { this.captures.delete(capture); }
+
+  private throwDeferredErrors(): void {
+    if (this.config.fileErrorPolicy !== "throw" || !this.errors.length) return;
+    const errors = this.errors.splice(0);
+    if (errors.length === 1) throw errors[0];
+    const combined = new Error(`RLog encountered ${errors.length} file write errors: ${errors.map((error) => error.message).join("; ")}`);
+    combined.name = "RLogWriteError";
+    throw combined;
+  }
+}
