@@ -1,8 +1,8 @@
 import { Config } from "./config";
-import { ConsoleSink, JsonlFileSink, TextFileSink, toError } from "./sinks";
+import { ConsoleSink, JsonlFileSink, TextFileSink, toError, type LogSink } from "./sinks";
 import { RLogClosedError } from "./types";
 import { Toolkit } from "./toolkit";
-import type { FileErrorContext, LogRecord } from "./types";
+import type { FileErrorContext, LogRecord, LogTarget } from "./types";
 
 type State = "open" | "closing" | "closed";
 
@@ -11,6 +11,7 @@ export class Dispatcher {
   readonly console: ConsoleSink;
   readonly text: TextFileSink;
   readonly jsonl: JsonlFileSink;
+  readonly sinks: ReadonlyMap<LogTarget, LogSink>;
   private state: State = "open";
   private readonly pending: LogRecord[] = [];
   private work: Promise<void> = Promise.resolve();
@@ -28,6 +29,11 @@ export class Dispatcher {
     this.console = new ConsoleSink(config, this.toolkit);
     this.text = new TextFileSink(config, this.toolkit, report);
     this.jsonl = new JsonlFileSink(config, this.toolkit, report);
+    this.sinks = new Map<LogTarget, LogSink>([
+      [this.console.target, this.console],
+      [this.text.target, this.text],
+      [this.jsonl.target, this.jsonl],
+    ]);
   }
 
   nextId(): number { this.sequence += 1; return this.sequence; }
@@ -38,7 +44,7 @@ export class Dispatcher {
     // The default screen format does not include metadata, so it is safe to
     // retain 2.1's synchronous terminal behavior while file/JSONL waits one
     // microtask for a chained .meta() call.
-    if (this.config.screenMetadataOutput === "none" && record.destination !== "file") {
+    if (this.config.screenMetadataOutput === "none" && (record.targets === "all" || record.targets.has("screen"))) {
       record.screenWritten = true;
       const write = this.console.write(record).catch((reason: unknown) => {
         this.pushDeferredError(toError(reason));
@@ -64,9 +70,13 @@ export class Dispatcher {
   }
 
   private async dispatch(record: LogRecord): Promise<void> {
-    if (!record.screenWritten) await this.console.write(record);
-    await this.text.write(record);
-    await this.jsonl.write(record);
+    let firstError: Error | undefined;
+    for (const sink of this.sinks.values()) {
+      if (sink.target === "screen" && record.screenWritten) continue;
+      try { await sink.write(record); }
+      catch (reason) { firstError ??= toError(reason); }
+    }
+    if (firstError) throw firstError;
   }
 
   reportFileError(error: Error, context: FileErrorContext): void {
@@ -90,8 +100,7 @@ export class Dispatcher {
     await this.screenWork;
     const outcomes = await Promise.allSettled([
       ...[...this.captures].map((capture) => capture.flush()),
-      this.text.file.flush(),
-      this.jsonl.file.flush(),
+      ...[...this.sinks.values()].map((sink) => sink.flush()),
     ]);
     for (const outcome of outcomes) if (outcome.status === "rejected") this.captureFileError(toError(outcome.reason));
     this.throwDeferredErrors();
@@ -111,7 +120,7 @@ export class Dispatcher {
     this.commitPending();
     await this.work;
     await this.screenWork;
-    const outcomes = await Promise.allSettled([this.text.file.close(), this.jsonl.file.close()]);
+    const outcomes = await Promise.allSettled([...this.sinks.values()].map((sink) => sink.close()));
     for (const outcome of outcomes) if (outcome.status === "rejected") this.captureFileError(toError(outcome.reason));
     this.state = "closed";
     this.throwDeferredErrors();

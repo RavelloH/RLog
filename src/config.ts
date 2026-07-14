@@ -1,5 +1,5 @@
 import { normalizeLevel, parseArgvLevel } from "./levels";
-import type { ConfigOptions, CustomColorRule, FileErrorPolicy, LogLevel, LogMetadata, MetadataOutputMode, ScreenOutput } from "./types";
+import type { ConfigOptions, CustomColorRule, FileErrorPolicy, LogLevel, LogMetadata, MetadataOutputMode, RotationOptions, ScreenOutput } from "./types";
 
 const defaultRules: CustomColorRule[] = [
   { reg: "false", color: "red" }, { reg: "true", color: "green" },
@@ -27,6 +27,8 @@ export class Config {
   jsonlLogLevel: LogLevel | undefined;
   screenOutput: ScreenOutput = "stdout";
   jsonlFilePath: string | undefined;
+  textRotation: RotationOptions | false = false;
+  jsonlRotation: RotationOptions | false = false;
   context: LogMetadata = {};
   screenMetadataOutput: MetadataOutputMode = "none";
   fileMetadataOutput: MetadataOutputMode = "block";
@@ -54,6 +56,8 @@ export class Config {
     if (next.screenMetadataOutput !== undefined && !["none", "inline", "block"].includes(next.screenMetadataOutput)) throw new Error(`Invalid screenMetadataOutput: ${next.screenMetadataOutput}`);
     if (next.fileMetadataOutput !== undefined && !["none", "inline", "block"].includes(next.fileMetadataOutput)) throw new Error(`Invalid fileMetadataOutput: ${next.fileMetadataOutput}`);
     if (next.fileErrorPolicy !== undefined && !["throw", "disable", "stderr", "ignore"].includes(next.fileErrorPolicy)) throw new Error(`Invalid fileErrorPolicy: ${next.fileErrorPolicy}`);
+    if (next.textRotation !== undefined) this.validateRotation(next.textRotation, "textRotation");
+    if (next.jsonlRotation !== undefined) this.validateRotation(next.jsonlRotation, "jsonlRotation");
     if (next.exitListenerTimeoutMs !== undefined && (!Number.isFinite(next.exitListenerTimeoutMs) || next.exitListenerTimeoutMs < 0)) throw new Error("exitListenerTimeoutMs must be a non-negative finite number");
     if (next.exitCloseTimeoutMs !== undefined && (!Number.isFinite(next.exitCloseTimeoutMs) || next.exitCloseTimeoutMs < 0)) throw new Error("exitCloseTimeoutMs must be a non-negative finite number");
     if (next.logLevel !== undefined) this.logLevel = normalizeLevel(next.logLevel);
@@ -64,7 +68,7 @@ export class Config {
     if (next.context !== undefined) this.context = { ...next.context };
     for (const [key, value] of Object.entries(next) as Array<[keyof ConfigOptions, ConfigOptions[keyof ConfigOptions]]>) {
       if (["logLevel", "screenLogLevel", "fileLogLevel", "jsonlLogLevel", "screenOutput", "context"].includes(key)) continue;
-      if (value !== undefined) Reflect.set(this, key, value);
+      if (value !== undefined) Reflect.set(this, key, key === "textRotation" || key === "jsonlRotation" ? (value === false ? false : { ...(value as RotationOptions) }) : value);
     }
   }
 
@@ -80,5 +84,12 @@ export class Config {
     const argv = this.readLogLevelFromArgv ? parseArgvLevel(process.argv.slice(2), this.logLevelArgumentName) : undefined;
     const environment = this.readLogLevelFromEnv ? process.env[this.logLevelEnvironmentName] : undefined;
     return argv ?? normalizeLevel(environment as import("./types").LogLevelInput | undefined, this.logLevel);
+  }
+
+  private validateRotation(value: RotationOptions | false, name: string): void {
+    if (value === false) return;
+    if (!value || !Number.isFinite(value.maxBytes) || value.maxBytes <= 0 || !Number.isInteger(value.maxFiles) || value.maxFiles < 0) {
+      throw new Error(`${name} must be false or { maxBytes: positive finite number, maxFiles: non-negative integer }`);
+    }
   }
 }

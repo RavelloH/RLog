@@ -393,9 +393,8 @@ async function run() {
     customColorRules: [{ reg: "2026-04-29", color: "red" }],
   });
   const colorBoundaryOutput = captureStdout(() => {
-    colorBoundaryRlog.screen.info(
+    colorBoundaryRlog.screen.at(new Date("2026-04-29T00:00:00.000Z")).info(
       "message 2026-04-29",
-      new Date("2026-04-29T00:00:00.000Z")
     );
   });
 
@@ -415,7 +414,7 @@ async function run() {
       "{time:YYYY-MM-DD HH:mm:ss.SSS Z ZZ ddd dddd MMM MMMM A a} {message}",
   });
   assert.strictEqual(
-    stripAnsi(captureStdout(() => timezoneRlog.screen.info("time", fixedDate))),
+    stripAnsi(captureStdout(() => timezoneRlog.screen.at(fixedDate).info("time"))),
     "2026-04-28 22:37:36.051 +08:00 +0800 Tue Tuesday Apr April PM pm time\n",
     "time formatter should support common tokens and IANA timezones"
   );
@@ -425,7 +424,7 @@ async function run() {
     logTemplate: "{time:YYYY-MM-DD HH:mm:ss Z} {message}",
   });
   assert.strictEqual(
-    stripAnsi(captureStdout(() => chicagoRlog.screen.info("time", fixedDate))),
+    stripAnsi(captureStdout(() => chicagoRlog.screen.at(fixedDate).info("time"))),
     "2026-04-28 09:37:36 -05:00 time\n",
     "time formatter should apply daylight-saving timezone offsets"
   );
@@ -435,7 +434,7 @@ async function run() {
     logTemplate: "{time:ISO}|{time:GMT}|{time:UTC}|{time:timestamp}|{message}",
   });
   assert.strictEqual(
-    stripAnsi(captureStdout(() => specialTimeRlog.screen.info("time", fixedDate))),
+    stripAnsi(captureStdout(() => specialTimeRlog.screen.at(fixedDate).info("time"))),
     "2026-04-28T14:37:36.051Z|2026-04-28T14:37:36.051Z|2026-04-28T14:37:36Z|1777387056051|time\n",
     "time formatter should support ISO, GMT, UTC, and timestamp special formats"
   );
@@ -445,7 +444,7 @@ async function run() {
     logTemplate: "{time:YYYY[year]MM[month]DD} {message}",
   });
   assert.strictEqual(
-    stripAnsi(captureStdout(() => literalTimeRlog.screen.info("time", fixedDate))),
+    stripAnsi(captureStdout(() => literalTimeRlog.screen.at(fixedDate).info("time"))),
     "2026year04month28 time\n",
     "time formatter should support bracket literals"
   );
@@ -897,13 +896,18 @@ async function runV22() {
     let legacyScreen = "";
     const legacyTarget = new (require("stream").Writable)({ write(chunk, _encoding, callback) { legacyScreen += chunk.toString(); callback(); } });
     const legacyTime = new Rlog({ autoInit: false, silent: true, enableColorfulOutput: false, screenOutput: legacyTarget, logFilePath: legacyTimeFile, timeFormat: "timestamp" });
-    legacyTime.screen.info("numeric time", 123);
-    legacyTime.screen.warn("boolean time", false);
-    legacyTime.file.info("bigint time", 9n);
-    legacyTime.file.error("string time", "legacy");
+    legacyTime.screen.info("numeric value", 123);
+    legacyTime.screen.warn("boolean value", false);
+    legacyTime.file.info("bigint value", 9n);
+    legacyTime.file.error("string value", "legacy");
+    legacyTime.screen.at(123).info("numeric time");
+    legacyTime.file.at(9n).info("bigint time");
     await legacyTime.close();
-    assert.match(legacyScreen, /^\[123\]\[INFO\] numeric time/m, "screen methods retain non-Date time compatibility");
-    assert.match(fs.readFileSync(legacyTimeFile, "utf8"), /^\[9\]\[INFO\] bigint time/m, "file methods retain bigint time compatibility");
+    assert.match(legacyScreen, /numeric value 123/, "facade second argument is a console-style body argument");
+    assert.match(legacyScreen, /^\[123\]\[INFO\] numeric time/m, "screen.at retains non-Date time compatibility");
+    const legacyText = fs.readFileSync(legacyTimeFile, "utf8");
+    assert.match(legacyText, /bigint value 9n/, "file alias uses console-style arguments");
+    assert.match(legacyText, /^\[9\]\[INFO\] bigint time/m, "text.at retains bigint time compatibility");
 
     const levelFile = path.join(tempDir, "levels.log");
     const levelRlog = new Rlog({ autoInit: false, silent: true, screenOutput: "none", logFilePath: levelFile, screenLogLevel: "off", fileLogLevel: "debug" });

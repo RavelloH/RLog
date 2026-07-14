@@ -13,10 +13,18 @@ export type LogLevel =
 export type LogLevelInput = LogLevel | "warning";
 export type Tostringable = string | null | boolean | undefined | number | bigint | Date;
 export type LogMetadata = Record<string, unknown>;
-export type LogDestination = "all" | "screen" | "file";
+/** A concrete output target. `file` is intentionally not a target: text and JSONL are independent. */
+export type LogTarget = "screen" | "text" | "jsonl";
+export type LogTargets = "all" | ReadonlySet<LogTarget>;
 export type ScreenOutput = "stdout" | "stderr" | "none" | Writable;
 export type MetadataOutputMode = "none" | "inline" | "block";
 export type FileErrorPolicy = "throw" | "disable" | "stderr" | "ignore";
+
+/** `maxFiles` is the number of retained historical files; it excludes the active file. */
+export interface RotationOptions {
+  maxBytes: number;
+  maxFiles: number;
+}
 
 export interface CustomColorRule {
   reg: string;
@@ -28,7 +36,7 @@ export type LogColor = "red" | "green" | "yellow" | "blue" | "magenta" | "cyan" 
 export interface FileErrorContext {
   filePath?: string;
   output: "text" | "jsonl" | "capture";
-  operation: "open" | "write" | "flush" | "close";
+  operation: "open" | "write" | "flush" | "close" | "rotate";
 }
 
 export interface ConfigOptions {
@@ -48,6 +56,10 @@ export interface ConfigOptions {
   jsonlLogLevel?: LogLevelInput;
   screenOutput?: ScreenOutput;
   jsonlFilePath?: string;
+  /** Size-based rotation for the text log. Disabled by default. */
+  textRotation?: RotationOptions | false;
+  /** Size-based rotation for the JSONL log. Disabled by default. */
+  jsonlRotation?: RotationOptions | false;
   context?: LogMetadata;
   screenMetadataOutput?: MetadataOutputMode;
   fileMetadataOutput?: MetadataOutputMode;
@@ -70,7 +82,7 @@ export interface LogRecord {
   message: string;
   metadata: LogMetadata;
   context: LogMetadata;
-  destination: LogDestination;
+  targets: LogTargets;
   event?: { type: string; data?: LogMetadata };
   committed: boolean;
   screenWritten?: boolean;
