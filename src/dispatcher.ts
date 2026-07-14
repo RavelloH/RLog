@@ -43,7 +43,7 @@ export class Dispatcher {
       const write = this.console.write(record).catch((reason: unknown) => {
         this.pushDeferredError(toError(reason));
       });
-      this.screenWork = this.screenWork.then(() => write);
+      this.screenWork = Promise.all([this.screenWork, write]).then(() => undefined);
     }
     this.pending.push(record);
     if (!this.scheduled) {

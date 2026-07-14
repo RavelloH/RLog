@@ -7,9 +7,38 @@ import type { FileErrorContext, LogColor, LogRecord } from "./types";
 import { Toolkit } from "./toolkit";
 
 export type ErrorReporter = (error: Error, context: FileErrorContext) => void;
+interface ConsoleErrorGuard { active: number; installed: boolean; listener: (error: Error) => void; }
+const consoleErrorGuards = new WeakMap<Writable, ConsoleErrorGuard>();
 
-function writeTo(stream: Writable, value: string | Buffer): Promise<void> {
+function guardConsoleTarget(target: Writable): (afterError: boolean) => void {
+  let guard = consoleErrorGuards.get(target);
+  if (!guard) {
+    guard = { active: 0, installed: false, listener: () => undefined };
+    consoleErrorGuards.set(target, guard);
+  }
+  if (!guard.installed) { target.on("error", guard.listener); guard.installed = true; }
+  guard.active += 1;
+  return (afterError: boolean) => {
+    guard.active -= 1;
+    if (guard.active !== 0) return;
+    const remove = () => {
+      if (guard.active === 0 && guard.installed) {
+        target.removeListener("error", guard.listener);
+        guard.installed = false;
+      }
+    };
+    if (afterError) setImmediate(remove);
+    else remove();
+  };
+}
+
+function writeTo(stream: Writable, value: string | Buffer, listenForError = true): Promise<void> {
   return new Promise((resolve, reject) => {
+    if (!listenForError) {
+      try { stream.write(value, (error?: Error | null) => error ? reject(error) : resolve()); }
+      catch (reason) { reject(toError(reason)); }
+      return;
+    }
     let settled = false;
     const finish = (error?: Error | null) => {
       if (settled) return;
@@ -172,7 +201,11 @@ export class ConsoleSink {
     const processed = this.toolkit.colorizeString(this.toolkit.encryptPrivacyContent(body));
     const coloredBody = record.level === "success" ? this.toolkit.colorText(processed, "green") : processed;
     const line = this.toolkit.formatLogMessage(label, coloredBody, record.timestamp, this.toolkit.colorText(label, color));
-    await writeTo(target, `${line}\n`);
+    const release = guardConsoleTarget(target);
+    let failed = false;
+    try { await writeTo(target, `${line}\n`, false); }
+    catch (reason) { failed = true; throw reason; }
+    finally { release(failed); }
   }
 
   async progress(num: number, max: number): Promise<void> {
@@ -187,7 +220,11 @@ export class ConsoleSink {
     const width = Math.max(0, columns - header.length - state.length - percent.length - 6);
     const bar = width > 1 ? `[${"|".repeat(Math.max(0, Math.min(width, Math.floor(width * num / safeMax))))}${" ".repeat(Math.max(0, width - Math.floor(width * num / safeMax)))}] ` : "";
     const tty = Boolean((target as { isTTY?: boolean }).isTTY);
-    await writeTo(target, `${tty ? "\r" : ""}${header}${bar}${percent} ${state}${tty ? "" : "\n"}`);
+    const release = guardConsoleTarget(target);
+    let failed = false;
+    try { await writeTo(target, `${tty ? "\r" : ""}${header}${bar}${percent} ${state}${tty ? "" : "\n"}`, false); }
+    catch (reason) { failed = true; throw reason; }
+    finally { release(failed); }
   }
 
   private resolveTarget(): Writable | undefined {

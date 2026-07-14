@@ -923,6 +923,30 @@ async function runV22() {
     await outputRlog.close();
     assert.match(customOutput, /custom target/, "custom screen target receives logs");
 
+    const slowOutput = [];
+    const slowWarnings = [];
+    const slowTarget = new (require("stream").Writable)({
+      write(chunk, _encoding, callback) {
+        setTimeout(() => { slowOutput.push(chunk.toString()); callback(); }, 2);
+      },
+    });
+    const warningListener = (warning) => {
+      if (warning && warning.name === "MaxListenersExceededWarning") slowWarnings.push(warning);
+    };
+    process.on("warning", warningListener);
+    try {
+      const slowRlog = new Rlog({ autoInit: false, silent: true, enableColorfulOutput: false, screenOutput: slowTarget });
+      for (let index = 0; index < 100; index += 1) slowRlog.info("line %d", index);
+      await slowRlog.close();
+      await new Promise((resolve) => setImmediate(resolve));
+    } finally {
+      process.removeListener("warning", warningListener);
+    }
+    assert.strictEqual(slowOutput.length, 100, "slow Writable receives every screen record");
+    assert.match(slowOutput[0], /line 0/, "slow Writable preserves the first record");
+    assert.match(slowOutput[99], /line 99/, "slow Writable preserves the final record");
+    assert.strictEqual(slowWarnings.length, 0, "serial screen writes do not accumulate error listeners");
+
     const originalArgv = process.argv;
     const originalEnv = process.env.RLOG_LEVEL;
     process.argv = [...process.argv, "--log-level=error"];
