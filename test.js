@@ -124,7 +124,11 @@ function runExitChild(body, extraEnv = {}) {
   const childCode = `
     const fs = require("fs");
     const Rlog = require(${JSON.stringify(distEntry)});
-    process.stdout.write = () => true;
+    process.stdout.write = (_chunk, encoding, callback) => {
+      const done = typeof encoding === "function" ? encoding : callback;
+      if (typeof done === "function") done();
+      return true;
+    };
     ${body}
   `;
 
@@ -999,6 +1003,51 @@ async function runV22() {
       promise,
       new Promise((_, reject) => setTimeout(() => reject(new Error(`${label} timed out`)), 1000)),
     ]);
+    const closeActiveTextCapture = async (screenOutput, input, options = {}) => {
+      const source = new (require("stream").PassThrough)();
+      const logger = new Rlog({ autoInit: false, silent: true, enableColorfulOutput: false, screenOutput });
+      const handle = logger.capture.stream(source, { displayLevel: "info", ...options });
+      source.write(input);
+      const closePromise = logger.close();
+      assert.throws(() => logger.info("late user log"), Rlog.RLogClosedError, "ordinary user logs remain rejected while closing");
+      await captureTimeout(closePromise, "text capture close");
+      const result = await captureTimeout(handle.done, "text capture done");
+      assert.strictEqual(result.reason, "logger-close");
+      return result;
+    };
+
+    let partialOutput = "";
+    const partialTarget = new (require("stream").Writable)({ write(chunk, _encoding, callback) { partialOutput += chunk.toString(); callback(); } });
+    await closeActiveTextCapture(partialTarget, "partial line");
+    assert.strictEqual(typeof partialOutput, "string", "custom Writable supports closing text captures");
+    await closeActiveTextCapture("stdout", "stdout partial");
+    await closeActiveTextCapture("stderr", "stderr partial");
+    await closeActiveTextCapture("none", "none partial");
+
+    let completeOutput = "";
+    const completeTarget = new (require("stream").Writable)({ write(chunk, _encoding, callback) { completeOutput += chunk.toString(); callback(); } });
+    await closeActiveTextCapture(completeTarget, "complete line\n");
+    assert.match(completeOutput, /complete line/, "complete lines are mirrored before close");
+
+    const utf8File = path.join(tempDir, "closing-utf8.log");
+    const utf8Source = new (require("stream").PassThrough)();
+    const utf8Rlog = new Rlog({ autoInit: false, silent: true, enableColorfulOutput: false, screenOutput: "none" });
+    const utf8Capture = utf8Rlog.capture.stream(utf8Source, { displayLevel: "info", file: utf8File });
+    utf8Source.write(Buffer.from([0xe4, 0xb8]));
+    utf8Source.write(Buffer.from([0xad]));
+    await captureTimeout(utf8Rlog.close(), "UTF-8 capture close");
+    await captureTimeout(utf8Capture.done, "UTF-8 capture done");
+    assert.strictEqual(fs.readFileSync(utf8File, "utf8"), "中", "split UTF-8 data is flushed without corruption");
+
+    const failingTarget = new (require("stream").Writable)({ write(_chunk, _encoding, callback) { callback(new Error("display failed")); } });
+    const failingSource = new (require("stream").PassThrough)();
+    const failingDisplayRlog = new Rlog({ autoInit: false, silent: true, enableColorfulOutput: false, screenOutput: failingTarget });
+    const failingDisplayCapture = failingDisplayRlog.capture.stream(failingSource, { displayLevel: "info" });
+    failingSource.write("complete display line\n");
+    await assert.rejects(captureTimeout(failingDisplayRlog.close(), "failing display close"), /display failed/, "display Writable errors are delivered by close");
+    const failingDisplayResult = await captureTimeout(failingDisplayCapture.done, "failing display capture done");
+    assert.strictEqual(failingDisplayResult.reason, "logger-close", "a display failure never leaves Capture pending");
+
     const assertCaptureReleased = async (promise, expectedError, releaseDir, label) => {
       await assert.rejects(captureTimeout(promise, label), expectedError);
       fs.rmSync(releaseDir, { recursive: true, force: false });

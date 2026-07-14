@@ -83,7 +83,14 @@ export default class Rlog {
     } else {
       this.root = this; this.config = new Config(options); this.dispatcher = new Dispatcher(this.config); this.toolkit = this.dispatcher.toolkit; this.context = { ...this.config.context }; this.exitListeners = [];
       this.captureManager = new CaptureManager(this.dispatcher, (level, line) => {
-        if (level !== "none") this.write(level, [line], "all");
+        if (level === "none") return;
+        try { this.write(level, [line], "all"); }
+        catch (error) {
+          // Capture finalization can run after Dispatcher enters "closing".
+          // A user log must still be rejected then, but a trailing mirrored line
+          // is optional and must not prevent the Capture from settling.
+          if (!(error instanceof RLogClosedError)) throw error;
+        }
       }, (type, data) => { this.event(type, data); });
       if (this.config.autoInit && this.config.logFilePath) {
         void this.initFile();

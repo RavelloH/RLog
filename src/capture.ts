@@ -113,11 +113,11 @@ class TextCapture implements TextStreamCaptureHandle {
     if (this.state !== "active") return this.done.then(() => undefined, () => undefined);
     this.state = "finishing";
     this.detach();
-    const remaining = this.decoder.end();
-    if (remaining) this.consume(remaining);
-    if (this.options.timestampLines && this.fileBuffer) this.queueFile(`[${this.dispatcher.toolkit.formatTime()}] ${this.options.stripAnsiInFile ? this.dispatcher.toolkit.stripAnsi(this.fileBuffer) : this.fileBuffer}`);
-    this.displayLines("", true);
     try {
+      const remaining = this.decoder.end();
+      if (remaining) this.consume(remaining);
+      if (this.options.timestampLines && this.fileBuffer) this.queueFile(`[${this.dispatcher.toolkit.formatTime()}] ${this.options.stripAnsiInFile ? this.dispatcher.toolkit.stripAnsi(this.fileBuffer) : this.fileBuffer}`);
+      this.displayLines("", true);
       await this.flush();
       await this.output?.close();
       if (this.failurePromise) return this.failurePromise;

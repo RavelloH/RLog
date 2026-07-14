@@ -14,6 +14,7 @@ export class Dispatcher {
   private state: State = "open";
   private readonly pending: LogRecord[] = [];
   private work: Promise<void> = Promise.resolve();
+  private screenWork: Promise<void> = Promise.resolve();
   private scheduled = false;
   private sequence = 0;
   private readonly errors: Error[] = [];
@@ -39,7 +40,10 @@ export class Dispatcher {
     // microtask for a chained .meta() call.
     if (this.config.screenMetadataOutput === "none" && record.destination !== "file") {
       record.screenWritten = true;
-      void this.console.write(record).catch((reason: unknown) => this.pushDeferredError(toError(reason)));
+      const write = this.console.write(record).catch((reason: unknown) => {
+        this.pushDeferredError(toError(reason));
+      });
+      this.screenWork = this.screenWork.then(() => write);
     }
     this.pending.push(record);
     if (!this.scheduled) {
@@ -83,6 +87,7 @@ export class Dispatcher {
   async flush(): Promise<void> {
     this.commitPending();
     await this.work;
+    await this.screenWork;
     const outcomes = await Promise.allSettled([
       ...[...this.captures].map((capture) => capture.flush()),
       this.text.file.flush(),
@@ -105,6 +110,7 @@ export class Dispatcher {
     for (const outcome of captures) if (outcome.status === "rejected") this.captureFileError(toError(outcome.reason));
     this.commitPending();
     await this.work;
+    await this.screenWork;
     const outcomes = await Promise.allSettled([this.text.file.close(), this.jsonl.file.close()]);
     for (const outcome of outcomes) if (outcome.status === "rejected") this.captureFileError(toError(outcome.reason));
     this.state = "closed";

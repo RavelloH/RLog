@@ -10,7 +10,25 @@ export type ErrorReporter = (error: Error, context: FileErrorContext) => void;
 
 function writeTo(stream: Writable, value: string | Buffer): Promise<void> {
   return new Promise((resolve, reject) => {
-    stream.write(value, (error?: Error | null) => error ? reject(error) : resolve());
+    let settled = false;
+    const finish = (error?: Error | null) => {
+      if (settled) return;
+      settled = true;
+      if (error) {
+        // Writable can invoke its write callback before emitting the matching
+        // error event. Keep this one-shot listener through that turn so a
+        // failing custom screen target cannot become an unhandled event.
+        setImmediate(() => stream.removeListener("error", onError));
+        reject(error);
+      } else {
+        stream.removeListener("error", onError);
+        resolve();
+      }
+    };
+    const onError = (error: Error) => finish(error);
+    stream.once("error", onError);
+    try { stream.write(value, (error?: Error | null) => finish(error)); }
+    catch (reason) { finish(toError(reason)); }
   });
 }
 
