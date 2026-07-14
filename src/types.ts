@@ -11,6 +11,7 @@ export type LogLevel =
   | "off";
 
 export type LogLevelInput = LogLevel | "warning";
+export type Tostringable = string | null | boolean | undefined | number | bigint | Date;
 export type LogMetadata = Record<string, unknown>;
 export type LogDestination = "all" | "screen" | "file";
 export type ScreenOutput = "stdout" | "stderr" | "none" | Writable;
@@ -63,7 +64,7 @@ export interface ConfigOptions {
 
 export interface LogRecord {
   id: number;
-  timestamp: Date;
+  timestamp: Tostringable;
   level: Exclude<LogLevel, "off">;
   args: unknown[];
   message: string;

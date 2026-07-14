@@ -5,8 +5,8 @@ import { Config } from "./config";
 import { Dispatcher } from "./dispatcher";
 import { normalizeLevel } from "./levels";
 import { Toolkit } from "./toolkit";
-import type { BinaryCaptureOptions, BinaryStreamCaptureHandle, ConfigOptions, EventOptions, LogDestination, LogEntry, LogLevelInput, LogMetadata, ProcessCaptureOptions, ProcessCaptureResult, StreamCaptureOptions, TextStreamCaptureHandle } from "./types";
-import { LogEntryAlreadyCommittedError, type LogRecord, type RLogExitError } from "./types";
+import type { BinaryCaptureOptions, BinaryStreamCaptureHandle, ConfigOptions, EventOptions, LogDestination, LogEntry, LogLevelInput, LogMetadata, ProcessCaptureOptions, ProcessCaptureResult, StreamCaptureOptions, TextStreamCaptureHandle, Tostringable } from "./types";
+import { CaptureError, LogEntryAlreadyCommittedError, RLogClosedError, type LogRecord, type RLogExitError } from "./types";
 
 export * from "./types";
 
@@ -32,15 +32,15 @@ type ExitListener = () => void | Promise<void>;
 
 class ScreenFacade {
   constructor(private readonly logger: Rlog) {}
-  info(message: unknown, time?: Date): LogEntry { return this.logger.write("info", [message], "screen", undefined, time); }
-  warning(message: unknown, time?: Date): LogEntry { return this.logger.write("warn", [message], "screen", undefined, time); }
-  warn(message: unknown, time?: Date): LogEntry { return this.warning(message, time); }
-  error(message: unknown, time?: Date): LogEntry { return this.logger.write("error", [message], "screen", undefined, time); }
-  success(message: unknown, time?: Date): LogEntry { return this.logger.write("success", [message], "screen", undefined, time); }
-  trace(message: unknown, time?: Date): LogEntry { return this.logger.write("trace", [message], "screen", undefined, time); }
-  debug(message: unknown, time?: Date): LogEntry { return this.logger.write("debug", [message], "screen", undefined, time); }
-  fatal(message: unknown, time?: Date): LogEntry { return this.logger.write("fatal", [message], "screen", undefined, time); }
-  exit(message: unknown, time?: Date): LogEntry { return this.logger.write("fatal", [message], "screen", "EXIT", time); }
+  info(message: unknown, time?: Tostringable): LogEntry { return this.logger.write("info", [message], "screen", undefined, time); }
+  warning(message: unknown, time?: Tostringable): LogEntry { return this.logger.write("warn", [message], "screen", undefined, time); }
+  warn(message: unknown, time?: Tostringable): LogEntry { return this.warning(message, time); }
+  error(message: unknown, time?: Tostringable): LogEntry { return this.logger.write("error", [message], "screen", undefined, time); }
+  success(message: unknown, time?: Tostringable): LogEntry { return this.logger.write("success", [message], "screen", undefined, time); }
+  trace(message: unknown, time?: Tostringable): LogEntry { return this.logger.write("trace", [message], "screen", undefined, time); }
+  debug(message: unknown, time?: Tostringable): LogEntry { return this.logger.write("debug", [message], "screen", undefined, time); }
+  fatal(message: unknown, time?: Tostringable): LogEntry { return this.logger.write("fatal", [message], "screen", undefined, time); }
+  exit(message: unknown, time?: Tostringable): LogEntry { return this.logger.write("fatal", [message], "screen", "EXIT", time); }
 }
 
 class FileFacade {
@@ -49,15 +49,15 @@ class FileFacade {
   init(): void { void this.logger.initFile(); }
   writeLogToStream(text: string): Promise<void> { return this.logger.writeRawFile(text); }
   writeLog(text: string): Promise<void> { return this.writeLogToStream(text); }
-  info(message: unknown, time?: Date): LogEntry { return this.logger.write("info", [message], "file", undefined, time); }
-  warning(message: unknown, time?: Date): LogEntry { return this.logger.write("warn", [message], "file", undefined, time); }
-  warn(message: unknown, time?: Date): LogEntry { return this.warning(message, time); }
-  error(message: unknown, time?: Date): LogEntry { return this.logger.write("error", [message], "file", undefined, time); }
-  success(message: unknown, time?: Date): LogEntry { return this.logger.write("success", [message], "file", undefined, time); }
-  trace(message: unknown, time?: Date): LogEntry { return this.logger.write("trace", [message], "file", undefined, time); }
-  debug(message: unknown, time?: Date): LogEntry { return this.logger.write("debug", [message], "file", undefined, time); }
-  fatal(message: unknown, time?: Date): LogEntry { return this.logger.write("fatal", [message], "file", undefined, time); }
-  exit(message: unknown, time?: Date): LogEntry { return this.logger.write("fatal", [message], "file", "EXIT", time); }
+  info(message: unknown, time?: Tostringable): LogEntry { return this.logger.write("info", [message], "file", undefined, time); }
+  warning(message: unknown, time?: Tostringable): LogEntry { return this.logger.write("warn", [message], "file", undefined, time); }
+  warn(message: unknown, time?: Tostringable): LogEntry { return this.warning(message, time); }
+  error(message: unknown, time?: Tostringable): LogEntry { return this.logger.write("error", [message], "file", undefined, time); }
+  success(message: unknown, time?: Tostringable): LogEntry { return this.logger.write("success", [message], "file", undefined, time); }
+  trace(message: unknown, time?: Tostringable): LogEntry { return this.logger.write("trace", [message], "file", undefined, time); }
+  debug(message: unknown, time?: Tostringable): LogEntry { return this.logger.write("debug", [message], "file", undefined, time); }
+  fatal(message: unknown, time?: Tostringable): LogEntry { return this.logger.write("fatal", [message], "file", undefined, time); }
+  exit(message: unknown, time?: Tostringable): LogEntry { return this.logger.write("fatal", [message], "file", "EXIT", time); }
 }
 
 export default class Rlog {
@@ -82,7 +82,9 @@ export default class Rlog {
       this.root = internals.root; this.config = this.root.config; this.dispatcher = this.root.dispatcher; this.toolkit = this.root.toolkit; this.context = internals.context; this.exitListeners = this.root.exitListeners; this.captureManager = this.root.captureManager;
     } else {
       this.root = this; this.config = new Config(options); this.dispatcher = new Dispatcher(this.config); this.toolkit = this.dispatcher.toolkit; this.context = { ...this.config.context }; this.exitListeners = [];
-      this.captureManager = new CaptureManager(this.dispatcher, (level, line) => { this.write(level, [line], "all"); }, (type, data) => { this.event(type, data); });
+      this.captureManager = new CaptureManager(this.dispatcher, (level, line) => {
+        if (level !== "none") this.write(level, [line], "all");
+      }, (type, data) => { this.event(type, data); });
       if (this.config.autoInit && this.config.logFilePath) {
         void this.initFile();
         if (!this.config.silent) this.write("info", [`The log will be written to ${this.config.logFilePath}`], "screen");
@@ -143,7 +145,7 @@ export default class Rlog {
     throw signal;
   }
 
-  write(level: LogLevelInput, args: readonly unknown[], destination: LogDestination, specialLabel?: string, timestamp = new Date()): LogEntry {
+  write(level: LogLevelInput, args: readonly unknown[], destination: LogDestination, specialLabel?: string, timestamp: Tostringable = new Date()): LogEntry {
     this.root.dispatcher.assertOpen();
     const normalized = normalizeLevel(level);
     if (normalized === "off") throw new Error("Cannot log with level off");
@@ -189,3 +191,6 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string)
 
 module.exports = Rlog;
 module.exports.default = Rlog;
+module.exports.CaptureError = CaptureError;
+module.exports.RLogClosedError = RLogClosedError;
+module.exports.LogEntryAlreadyCommittedError = LogEntryAlreadyCommittedError;

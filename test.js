@@ -7,6 +7,12 @@ const { Readable } = require("stream");
 const { formatWithOptions, inspect } = require("util");
 const Rlog = require("./dist/index.js");
 
+assert.strictEqual(typeof Rlog, "function", "CommonJS entry remains constructable");
+assert.strictEqual(typeof Rlog.default, "function", "CommonJS default export is retained");
+assert.strictEqual(typeof Rlog.CaptureError, "function", "CommonJS CaptureError export is retained");
+assert.strictEqual(typeof Rlog.RLogClosedError, "function", "CommonJS RLogClosedError export is retained");
+assert.strictEqual(typeof Rlog.LogEntryAlreadyCommittedError, "function", "CommonJS LogEntryAlreadyCommittedError export is retained");
+
 const INSPECT_OPTIONS = { colors: false };
 const ANSI_RE = /\x1B\[[0-?]*[ -/]*[@-~]/g;
 
@@ -844,6 +850,7 @@ async function runV22() {
     assert.strictEqual(records[0].meta.requestId, "req-1");
     assert.strictEqual(records[1].event.type, "stage.completed");
     assert.strictEqual(records[1].event.data.durationMs, 42);
+    assert.match(text, /durationMs: 42/, "event data is rendered with text metadata");
 
     const lateEntryRlog = new Rlog({ autoInit: false, silent: true, screenOutput: "none" });
     const lateEntry = lateEntryRlog.info("late metadata");
@@ -855,6 +862,18 @@ async function runV22() {
     lowLevelExit.file.exit("file-only exit");
     await lowLevelExit.close();
     assert.match(fs.readFileSync(path.join(tempDir, "low-exit.log"), "utf8"), /\[EXIT\] file-only exit/, "file.exit remains a file-only log operation");
+
+    const legacyTimeFile = path.join(tempDir, "legacy-time.log");
+    let legacyScreen = "";
+    const legacyTarget = new (require("stream").Writable)({ write(chunk, _encoding, callback) { legacyScreen += chunk.toString(); callback(); } });
+    const legacyTime = new Rlog({ autoInit: false, silent: true, enableColorfulOutput: false, screenOutput: legacyTarget, logFilePath: legacyTimeFile, timeFormat: "timestamp" });
+    legacyTime.screen.info("numeric time", 123);
+    legacyTime.screen.warn("boolean time", false);
+    legacyTime.file.info("bigint time", 9n);
+    legacyTime.file.error("string time", "legacy");
+    await legacyTime.close();
+    assert.match(legacyScreen, /^\[123\]\[INFO\] numeric time/m, "screen methods retain non-Date time compatibility");
+    assert.match(fs.readFileSync(legacyTimeFile, "utf8"), /^\[9\]\[INFO\] bigint time/m, "file methods retain bigint time compatibility");
 
     const levelFile = path.join(tempDir, "levels.log");
     const levelRlog = new Rlog({ autoInit: false, silent: true, screenOutput: "none", logFilePath: levelFile, screenLogLevel: "off", fileLogLevel: "debug" });
@@ -887,6 +906,14 @@ async function runV22() {
     else process.env.RLOG_LEVEL = originalEnv;
     await priorityRlog.close();
 
+    for (const argv of [["--log-level"], ["--log-level="], ["--log-level", "--other"]]) {
+      process.argv = [originalArgv[0], originalArgv[1], ...argv];
+      const invalidArgvRlog = new Rlog({ autoInit: false, silent: true, screenOutput: "none", readLogLevelFromArgv: true });
+      assert.throws(() => invalidArgvRlog.config.effectiveLevel("screen"), /--log-level requires a value/, `invalid argv ${argv.join(" ")} is rejected`);
+      await invalidArgvRlog.close();
+    }
+    process.argv = originalArgv;
+
     const captureRlog = new Rlog({ autoInit: false, silent: true, screenOutput: "none" });
     const streamCapture = captureRlog.capture.stream(Readable.from([Buffer.from("a\n"), Buffer.from([0xe4, 0xb8]), Buffer.from([0xad, 0x0a])]), { file: path.join(tempDir, "stream.log"), computeSha256: true });
     const streamResult = await streamCapture.done;
@@ -903,6 +930,15 @@ async function runV22() {
     assert.strictEqual(binaryResult.sha256, "ae4b3280e56e2faf83f414a6e3dabe9d5fbe18976544c05fed121accb85b53fc", "binary SHA-256 is recorded");
     assert.deepStrictEqual(fs.readFileSync(path.join(tempDir, "stream.bin")), Buffer.from([0, 1, 2]));
 
+    let captureDisplay = "";
+    const captureTarget = new (require("stream").Writable)({ write(chunk, _encoding, callback) { captureDisplay += chunk.toString(); callback(); } });
+    const silentCaptureRlog = new Rlog({ autoInit: false, silent: true, enableColorfulOutput: false, screenOutput: captureTarget });
+    await silentCaptureRlog.capture.stream(Readable.from(["not displayed\n"]), { displayLevel: "off", file: path.join(tempDir, "off-stream.log") }).done;
+    const offChild = spawn(process.execPath, ["-e", "process.stdout.write('out\\n'); process.stderr.write('err\\n')"]);
+    await silentCaptureRlog.capture.process(offChild, { stdoutDisplay: "off", stderrDisplay: "off" });
+    await silentCaptureRlog.close();
+    assert.strictEqual(captureDisplay, "", 'capture display level "off" is normalized to "none"');
+
     const completedChild = spawn(process.execPath, ["-e", "process.stdout.write('out\\n'); process.stderr.write('err\\n')"]);
     const completedProcess = await captureRlog.capture.process(completedChild, { stdoutFile: path.join(tempDir, "process-out.log"), stderrFile: path.join(tempDir, "process-err.log"), computeSha256: true });
     assert.strictEqual(completedProcess.reason, "process-close");
@@ -918,6 +954,34 @@ async function runV22() {
     assert.strictEqual(childProcess.exitCode, null, "closing RLog does not terminate the child process");
     childProcess.kill();
 
+    const captureTimeout = (promise, label) => Promise.race([
+      promise,
+      new Promise((_, reject) => setTimeout(() => reject(new Error(`${label} timed out`)), 1000)),
+    ]);
+    const sourceErrorRlog = new Rlog({ autoInit: false, silent: true, screenOutput: "none", fileErrorPolicy: "ignore" });
+    const sourceError = new Readable({ read() { this.destroy(new Error("capture source failed")); } });
+    const sourceHandle = sourceErrorRlog.capture.stream(sourceError, { file: path.join(tempDir, "source-error.log") });
+    await assert.rejects(captureTimeout(sourceHandle.done, "source capture"), (error) => error && error.code === "CAPTURE_SOURCE_ERROR" && error.partialResult.reason === "error");
+    await sourceErrorRlog.close();
+
+    const textFailureRlog = new Rlog({ autoInit: false, silent: true, screenOutput: "none", fileErrorPolicy: "ignore" });
+    const textFailure = textFailureRlog.capture.stream(Readable.from(["text failure\n"]), { file: tempDir });
+    await assert.rejects(captureTimeout(textFailure.done, "text file capture"), (error) => error && error.code === "CAPTURE_FILE_ERROR" && error.partialResult.reason === "error");
+    await textFailureRlog.close();
+
+    const binaryFailureRlog = new Rlog({ autoInit: false, silent: true, screenOutput: "none", fileErrorPolicy: "ignore" });
+    const binaryFailure = binaryFailureRlog.capture.binary(Readable.from([Buffer.from("binary failure")]), { file: tempDir });
+    await assert.rejects(captureTimeout(binaryFailure.done, "binary file capture"), (error) => error && error.code === "CAPTURE_FILE_ERROR" && error.partialResult.reason === "error");
+    await binaryFailureRlog.close();
+
+    const processFailureRlog = new Rlog({ autoInit: false, silent: true, screenOutput: "none", fileErrorPolicy: "ignore" });
+    const failingChild = spawn(process.execPath, ["-e", "process.stdout.write('first\\n'); setInterval(() => {}, 1000)"]);
+    const failingProcess = processFailureRlog.capture.process(failingChild, { stdoutFile: tempDir });
+    await assert.rejects(captureTimeout(failingProcess, "process file capture"), (error) => error && error.code === "CAPTURE_FILE_ERROR" && error.partialResult.reason === "error");
+    assert.strictEqual(failingChild.exitCode, null, "process file capture failure does not terminate the child");
+    await processFailureRlog.close();
+    failingChild.kill();
+
     let fileErrorCalls = 0;
     const failingRlog = new Rlog({ autoInit: false, silent: true, screenOutput: "none", logFilePath: tempDir, fileErrorPolicy: "throw", onFileError() { fileErrorCalls += 1; } });
     failingRlog.info("write failure");
@@ -931,6 +995,48 @@ async function runV22() {
       await tolerant.close();
     }
 
+    for (const policy of ["throw", "disable", "stderr", "ignore"]) {
+      const flushFile = path.join(tempDir, `flush-${policy}.log`);
+      let reports = 0;
+      const flushRlog = new Rlog({ autoInit: false, silent: true, screenOutput: "none", logFilePath: flushFile, fileErrorPolicy: policy, onFileError(_error, context) { if (context.operation === "flush") reports += 1; } });
+      flushRlog.info("before flush failure");
+      await flushRlog.flush();
+      const stream = flushRlog.textLogStream;
+      const originalWrite = stream.write;
+      const originalStderrWrite = process.stderr.write;
+      let stderrOutput = "";
+      if (policy === "stderr") {
+        process.stderr.write = function captureFileError(chunk, encoding, callback) {
+          stderrOutput += Buffer.isBuffer(chunk) ? chunk.toString() : String(chunk);
+          const done = typeof encoding === "function" ? encoding : callback;
+          if (typeof done === "function") done();
+          return true;
+        };
+      }
+      stream.write = function failingFlushWrite(chunk, encoding, callback) {
+        const done = typeof encoding === "function" ? encoding : callback;
+        if (chunk === "") { process.nextTick(() => done(new Error("flush failure"))); return true; }
+        return originalWrite.call(this, chunk, encoding, callback);
+      };
+      if (policy === "throw") await assert.rejects(flushRlog.flush(), /flush failure/);
+      else await flushRlog.flush();
+      stream.write = originalWrite;
+      process.stderr.write = originalStderrWrite;
+      assert.strictEqual(reports, 1, `${policy} reports the flush error once`);
+      if (policy === "stderr") assert.match(stderrOutput, /RLog file error \(flush, text\): flush failure/, "stderr policy uses the direct stderr fallback");
+      await flushRlog.close();
+    }
+
+    const listenerLeakFile = path.join(tempDir, "listener-leak.log");
+    const listenerLeakRlog = new Rlog({ autoInit: false, silent: true, screenOutput: "none", logFilePath: listenerLeakFile });
+    listenerLeakRlog.info("listener baseline");
+    await listenerLeakRlog.flush();
+    const listenerLeakStream = listenerLeakRlog.textLogStream;
+    const baselineErrorListeners = listenerLeakStream.listenerCount("error");
+    for (let index = 0; index < 100; index += 1) await listenerLeakRlog.flush();
+    assert.strictEqual(listenerLeakStream.listenerCount("error"), baselineErrorListeners, "repeated flush calls do not leak error listeners");
+    await listenerLeakRlog.close();
+
     const exitScript = `
       const Rlog = require(${JSON.stringify(path.join(__dirname, "dist", "index.js"))});
       const r = new Rlog({ autoInit: false, silent: true, screenOutput: "none", exitListenerTimeoutMs: 25 });
@@ -941,11 +1047,19 @@ async function runV22() {
     const exitResult = spawnSync(process.execPath, ["-e", exitScript], { encoding: "utf8" });
     assert.strictEqual(exitResult.status, 1, "listener failure produces exit code 1");
     assert.strictEqual(fs.readFileSync(path.join(tempDir, "after-listener"), "utf8"), "ran", "later exit listeners still execute");
+    const rejectedListenerResult = spawnSync(process.execPath, ["-e", `const Rlog = require(${JSON.stringify(path.join(__dirname, "dist", "index.js"))}); const r = new Rlog({autoInit:false,silent:true,screenOutput:'none'}); r.onExit(() => Promise.reject(new Error('listener rejection'))); r.exit('rejected listener');`], { encoding: "utf8" });
+    assert.strictEqual(rejectedListenerResult.status, 1, "listener promise rejection produces exit code 1");
     const timeoutResult = spawnSync(process.execPath, ["-e", `const Rlog = require(${JSON.stringify(path.join(__dirname, "dist", "index.js"))}); const r = new Rlog({autoInit:false,silent:true,screenOutput:'none',exitListenerTimeoutMs:10}); r.onExit(() => new Promise(() => {})); r.exit('timeout');`], { encoding: "utf8", timeout: 1000 });
     assert.strictEqual(timeoutResult.status, 1, "listener timeout produces exit code 1");
+    const closeRejectResult = spawnSync(process.execPath, ["-e", `const Rlog = require(${JSON.stringify(path.join(__dirname, "dist", "index.js"))}); const r = new Rlog({autoInit:false,silent:true,screenOutput:'none'}); r.close = async () => { throw new Error('close rejection'); }; r.exit('close rejection');`], { encoding: "utf8" });
+    assert.strictEqual(closeRejectResult.status, 1, "close rejection produces exit code 1");
+    const closeTimeoutResult = spawnSync(process.execPath, ["-e", `const Rlog = require(${JSON.stringify(path.join(__dirname, "dist", "index.js"))}); const r = new Rlog({autoInit:false,silent:true,screenOutput:'none',exitCloseTimeoutMs:10}); r.close = () => new Promise(() => {}); r.exit('close timeout');`], { encoding: "utf8", timeout: 1000 });
+    assert.strictEqual(closeTimeoutResult.status, 1, "close timeout produces exit code 1");
     const ordinaryResult = spawnSync(process.execPath, ["-e", `const Rlog = require(${JSON.stringify(path.join(__dirname, "dist", "index.js"))}); new Rlog({silent:true}); throw new Error("ordinary failure");`], { encoding: "utf8" });
     assert.notStrictEqual(ordinaryResult.status, 0, "ordinary uncaught errors remain failures");
     assert.match(ordinaryResult.stderr, /ordinary failure/);
+    const hostListenerResult = spawnSync(process.execPath, ["-e", `const Rlog = require(${JSON.stringify(path.join(__dirname, "dist", "index.js"))}); let seen = 0; process.on('uncaughtException', () => { seen += 1; }); const before = process.listenerCount('uncaughtException'); new Rlog({silent:true}); const after = process.listenerCount('uncaughtException'); if (before !== after || seen !== 0) process.exit(2);`], { encoding: "utf8" });
+    assert.strictEqual(hostListenerResult.status, 0, "constructing RLog does not alter host uncaughtException listeners");
   } finally {
     fs.rmSync(tempDir, { recursive: true, force: true });
   }

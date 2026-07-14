@@ -1,5 +1,7 @@
 import type { LogLevel, LogLevelInput } from "./types";
 
+export type CaptureDisplayLevel = Exclude<LogLevel, "off"> | "none";
+
 const priorities: Record<LogLevel, number> = {
   trace: 10,
   debug: 20,
@@ -25,10 +27,24 @@ export function shouldLog(level: LogLevel, threshold: LogLevel): boolean {
 export function parseArgvLevel(argv: readonly string[], argumentName: string): LogLevel | undefined {
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index];
-    if (argument === argumentName) return normalizeLevel(argv[index + 1] as LogLevelInput | undefined);
-    if (argument.startsWith(`${argumentName}=`)) return normalizeLevel(argument.slice(argumentName.length + 1) as LogLevelInput);
+    if (argument === argumentName) {
+      const value = argv[index + 1];
+      if (!value || value.startsWith("-")) throw new Error(`${argumentName} requires a value`);
+      return normalizeLevel(value as LogLevelInput);
+    }
+    if (argument.startsWith(`${argumentName}=`)) {
+      const value = argument.slice(argumentName.length + 1);
+      if (!value) throw new Error(`${argumentName} requires a value`);
+      return normalizeLevel(value as LogLevelInput);
+    }
   }
   return undefined;
+}
+
+export function normalizeCaptureDisplayLevel(value: LogLevelInput | "none" | undefined): CaptureDisplayLevel {
+  if (value === undefined || value === "none" || value === "off") return "none";
+  const normalized = normalizeLevel(value);
+  return normalized === "off" ? "none" : normalized;
 }
 
 export function labelFor(level: LogLevel, target: "screen" | "file"): string {

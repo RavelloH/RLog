@@ -76,8 +76,12 @@ export class Dispatcher {
   async flush(): Promise<void> {
     this.commitPending();
     await this.work;
-    await Promise.all([...this.captures].map((capture) => capture.flush()));
-    await Promise.all([this.text.file.flush(), this.jsonl.file.flush()]);
+    const outcomes = await Promise.allSettled([
+      ...[...this.captures].map((capture) => capture.flush()),
+      this.text.file.flush(),
+      this.jsonl.file.flush(),
+    ]);
+    for (const outcome of outcomes) if (outcome.status === "rejected" && this.config.fileErrorPolicy === "throw") this.captureError(toError(outcome.reason));
     this.throwDeferredErrors();
   }
 
@@ -90,11 +94,12 @@ export class Dispatcher {
   private async doClose(): Promise<void> {
     if (this.state === "closed") return;
     this.state = "closing";
-    await Promise.all([...this.captures].map((capture) => capture.closeForLogger()));
+    const captures = await Promise.allSettled([...this.captures].map((capture) => capture.closeForLogger()));
+    for (const outcome of captures) if (outcome.status === "rejected" && this.config.fileErrorPolicy === "throw") this.captureError(toError(outcome.reason));
     this.commitPending();
     await this.work;
     const outcomes = await Promise.allSettled([this.text.file.close(), this.jsonl.file.close()]);
-    for (const outcome of outcomes) if (outcome.status === "rejected") this.captureError(toError(outcome.reason));
+    for (const outcome of outcomes) if (outcome.status === "rejected" && this.config.fileErrorPolicy === "throw") this.captureError(toError(outcome.reason));
     this.state = "closed";
     this.throwDeferredErrors();
   }

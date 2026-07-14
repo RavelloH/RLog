@@ -20,6 +20,7 @@ export class ManagedFile {
   private openedPath: string | undefined;
   private opening: Promise<void> | undefined;
   private readonly reportedErrors = new WeakSet<Error>();
+  private activeOperation: FileErrorContext["operation"] | undefined;
 
   constructor(private readonly output: FileErrorContext["output"], private readonly report: ErrorReporter) {}
 
@@ -43,10 +44,16 @@ export class ManagedFile {
 
   async flush(): Promise<void> {
     if (!this.writeStream || this.disabled) return;
-    await new Promise<void>((resolve, reject) => {
-      this.writeStream!.once("error", reject);
-      this.writeStream!.write("", (error) => error ? reject(error) : resolve());
-    });
+    const stream = this.writeStream;
+    this.activeOperation = "flush";
+    try {
+      await this.waitForStreamOperation(stream, (done) => stream.write("", done));
+    } catch (reason) {
+      const error = toError(reason);
+      this.disabled = true;
+      this.reportOnce(error, { filePath: this.openedPath, output: this.output, operation: "flush" });
+      throw error;
+    } finally { this.activeOperation = undefined; }
   }
 
   async close(): Promise<void> {
@@ -60,15 +67,23 @@ export class ManagedFile {
     if (!this.writeStream) return;
     const stream = this.writeStream;
     this.writeStream = undefined;
+    this.activeOperation = "close";
     await new Promise<void>((resolve, reject) => {
-      stream.once("error", reject);
-      stream.once("finish", resolve);
+      const onError = (error: Error) => finish(error);
+      const onFinish = () => finish();
+      const finish = (error?: Error) => {
+        stream.removeListener("error", onError);
+        stream.removeListener("finish", onFinish);
+        error ? reject(error) : resolve();
+      };
+      stream.once("error", onError);
+      stream.once("finish", onFinish);
       stream.end();
     }).catch((reason: unknown) => {
       const error = toError(reason);
       this.reportOnce(error, { filePath: this.openedPath, output: this.output, operation: "close" });
       throw error;
-    });
+    }).finally(() => { this.activeOperation = undefined; });
   }
 
   private async open(filePath: string): Promise<void> {
@@ -85,11 +100,12 @@ export class ManagedFile {
     if (this.writeStream) await this.closeCurrent();
     try {
       await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
+      this.activeOperation = "open";
       this.writeStream = fs.createWriteStream(filePath, { flags: "a" });
       this.openedPath = filePath;
       this.writeStream.on("error", (reason: Error) => {
         this.disabled = true;
-        this.reportOnce(reason, { filePath: this.openedPath, output: this.output, operation: "write" });
+        this.reportOnce(reason, { filePath: this.openedPath, output: this.output, operation: this.activeOperation ?? "write" });
       });
       await new Promise<void>((resolve, reject) => {
         this.writeStream!.once("open", resolve);
@@ -100,7 +116,22 @@ export class ManagedFile {
       this.disabled = true;
       this.reportOnce(error, { filePath, output: this.output, operation: "open" });
       throw error;
-    }
+    } finally { this.activeOperation = undefined; }
+  }
+
+  private waitForStreamOperation(stream: fs.WriteStream, operation: (done: (error?: Error | null) => void) => void): Promise<void> {
+    return new Promise<void>((resolve, reject) => {
+      let settled = false;
+      const finish = (error?: Error | null) => {
+        if (settled) return;
+        settled = true;
+        stream.removeListener("error", onError);
+        error ? reject(error) : resolve();
+      };
+      const onError = (error: Error) => finish(error);
+      stream.once("error", onError);
+      operation(finish);
+    });
   }
 
   private reportOnce(error: Error, context: FileErrorContext): void {
@@ -153,7 +184,7 @@ export class ConsoleSink {
       ? this.toolkit.formatConsoleArgs(record.args, this.config.enableColorfulOutput)
       : record.message;
     const mode = target === "screen" ? this.config.screenMetadataOutput : this.config.fileMetadataOutput;
-    const metadata = { ...record.context, ...record.metadata };
+    const metadata = { ...record.context, ...(record.event?.data ?? {}), ...record.metadata };
     if (!Object.keys(metadata).length || mode === "none") return text;
     const redacted = this.toolkit.redact(metadata) as Record<string, unknown>;
     const rendered = this.toolkit.safeInspect(redacted);
@@ -168,7 +199,7 @@ export class TextFileSink {
   async write(record: LogRecord): Promise<void> {
     if (!this.config.logFilePath || record.destination === "screen" || !shouldLog(record.level, this.config.effectiveLevel("file"))) return;
     const label = record.displayLabel ?? labelFor(record.level, "file");
-    const metadata = { ...record.context, ...record.metadata };
+    const metadata = { ...record.context, ...(record.event?.data ?? {}), ...record.metadata };
     const redacted = this.toolkit.redact(metadata) as Record<string, unknown>;
     let body = this.toolkit.encryptPrivacyContent(record.message);
     if (Object.keys(metadata).length && this.config.fileMetadataOutput !== "none") {
@@ -185,7 +216,7 @@ export class JsonlFileSink {
   async write(record: LogRecord): Promise<void> {
     if (!this.config.jsonlFilePath || record.destination !== "all" || !shouldLog(record.level, this.config.effectiveLevel("jsonl"))) return;
     const value = {
-      timestamp: record.timestamp.toISOString(), level: record.level, message: this.toolkit.encryptPrivacyContent(record.message),
+      timestamp: record.timestamp instanceof Date ? record.timestamp.toISOString() : new Date().toISOString(), level: record.level, message: this.toolkit.encryptPrivacyContent(record.message),
       args: this.toolkit.safeJson(record.args), context: this.toolkit.safeJson(record.context), meta: this.toolkit.safeJson(record.metadata),
       event: record.event ? { type: record.event.type, data: this.toolkit.safeJson(record.event.data ?? {}) } : null,
     };

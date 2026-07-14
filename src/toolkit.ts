@@ -1,6 +1,6 @@
 import { formatWithOptions, inspect } from "node:util";
 import type { Config } from "./config";
-import type { LogColor, LogMetadata } from "./types";
+import type { LogColor, LogMetadata, Tostringable } from "./types";
 
 const ANSI = /\x1B\[[0-?]*[ -/]*[@-~]/g;
 const ANSI_SPLIT = /(\u001b\[\d+m)/g;
@@ -23,13 +23,15 @@ export class Toolkit {
     return formatWithOptions({ colors }, ...args);
   }
 
-  formatTime(format = this.config.timeFormat, time: Date = new Date()): string | number {
-    if (format === "timestamp") return time.valueOf();
-    if (format === "ISO") return time.toISOString();
+  formatTime(format = this.config.timeFormat, time?: Tostringable): string | number | boolean | bigint | null {
+    if (time !== undefined && time !== null && !(time instanceof Date)) return time;
+    const sourceTime = time instanceof Date ? time : new Date();
+    if (format === "timestamp") return sourceTime.valueOf();
+    if (format === "ISO") return sourceTime.toISOString();
     const zone = format === "GMT" || format === "UTC" ? "UTC" : this.config.timezone;
-    if (format === "GMT") return `${this.formatDate(time, "YYYY-MM-DDTHH:mm:ss.SSS", zone)}Z`;
-    if (format === "UTC") return this.formatDate(time, "YYYY-MM-DDTHH:mm:ss[Z]", zone);
-    return this.formatDate(time, format, zone);
+    if (format === "GMT") return `${this.formatDate(sourceTime, "YYYY-MM-DDTHH:mm:ss.SSS", zone)}Z`;
+    if (format === "UTC") return this.formatDate(sourceTime, "YYYY-MM-DDTHH:mm:ss[Z]", zone);
+    return this.formatDate(sourceTime, format, zone);
   }
 
   private formatDate(date: Date, format: string, timezone?: string): string {
@@ -53,7 +55,7 @@ export class Toolkit {
     return format.replace(/\[([^\]]*)\]|YYYY|MMMM|MMM|MM|M|DD|D|HH|H|hh|h|mm|m|ss|s|SSS|SS|S|A|a|dddd|ddd|dd|d|ZZ|Z/g, (match, literal: string | undefined) => literal ?? values[match] ?? match);
   }
 
-  formatLogMessage(level: string, message: string, time: Date, coloredLevel?: string): string {
+  formatLogMessage(level: string, message: string, time?: Tostringable, coloredLevel?: string): string {
     const template = this.config.logTemplate || "{message}";
     let includedMessage = false;
     const output = template.replace(/\{(message|level|type|time(?::([^}]+))?)\}/g, (_token, name: string, timeFormat: string | undefined) => {
