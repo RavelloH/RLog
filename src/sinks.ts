@@ -136,12 +136,25 @@ export class ManagedFile {
     if (!this.writeStream) return;
     const stream = this.writeStream;
     this.writeStream = undefined;
+    // A failed WriteStream can have emitted error and closed before Capture's
+    // failure finalizer gets here (notably EISDIR on Unix). Do not wait for
+    // finish/error events that have already happened.
+    if (stream.closed || stream.destroyed) return;
     const operation = this.activeOperation ?? "close";
     await new Promise<void>((resolve, reject) => {
       const onError = (error: Error) => finish(error);
       const onFinish = () => finish();
-      const finish = (error?: Error) => { stream.removeListener("error", onError); stream.removeListener("finish", onFinish); error ? reject(error) : resolve(); };
-      stream.once("error", onError); stream.once("finish", onFinish); stream.end();
+      const onClose = () => finish();
+      const finish = (error?: Error) => {
+        stream.removeListener("error", onError);
+        stream.removeListener("finish", onFinish);
+        stream.removeListener("close", onClose);
+        error ? reject(error) : resolve();
+      };
+      stream.once("error", onError);
+      stream.once("finish", onFinish);
+      stream.once("close", onClose);
+      stream.end();
     }).catch((reason: unknown) => { const error = toError(reason); this.reportOnce(error, { filePath: this.openedPath, output: this.output, operation }); throw error; });
   }
 
