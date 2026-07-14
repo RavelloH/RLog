@@ -61,6 +61,74 @@ function asLine(text: string, terminated: boolean, lineNumber: number, timestamp
   return { text, timestamp, terminated, lineNumber, rawBytes: Buffer.byteLength(text) + (terminated ? 1 : 0) };
 }
 
+interface FramedLine {
+  text: string;
+  raw: string;
+  terminated: boolean;
+}
+
+/** Shared bounded line splitter for text and process Capture. */
+class LineFramer {
+  private buffer = "";
+  private discarding = false;
+  constructor(private readonly maxBytes: number, private readonly policy: CaptureLineOverflowPolicy) {}
+
+  push(text: string, final: boolean): FramedLine[] {
+    this.buffer += text;
+    const lines: FramedLine[] = [];
+    while (true) {
+      const newline = this.buffer.indexOf("\n");
+      if (newline < 0) break;
+      const raw = this.buffer.slice(0, newline + 1);
+      this.buffer = this.buffer.slice(newline + 1);
+      if (this.discarding) { this.discarding = false; continue; }
+      const value = raw.endsWith("\r\n") ? raw.slice(0, -2) : raw.slice(0, -1);
+      lines.push(...this.frameComplete(value, raw, true));
+    }
+    lines.push(...this.frameOpen());
+    if (final && this.buffer) {
+      if (!this.discarding) lines.push(...this.frameComplete(this.buffer, this.buffer, false));
+      this.buffer = "";
+      this.discarding = false;
+    }
+    return lines;
+  }
+
+  private frameOpen(): FramedLine[] {
+    const lines: FramedLine[] = [];
+    while (Buffer.byteLength(this.buffer) > this.maxBytes) {
+      if (this.policy === "error") throw new LineOverflowFailure(new Error(`Capture line exceeded ${this.maxBytes} bytes`));
+      const prefix = takePrefix(this.buffer, this.maxBytes);
+      this.buffer = this.buffer.slice(prefix.length);
+      if (this.policy === "truncate") {
+        if (!this.discarding) lines.push({ text: `${prefix}…`, raw: `${prefix}…`, terminated: false });
+        this.discarding = true;
+        return lines;
+      }
+      lines.push({ text: prefix, raw: prefix, terminated: false });
+    }
+    return lines;
+  }
+
+  private frameComplete(value: string, raw: string, terminated: boolean): FramedLine[] {
+    if (Buffer.byteLength(value) <= this.maxBytes) return [{ text: value, raw, terminated }];
+    if (this.policy === "error") throw new LineOverflowFailure(new Error(`Capture line exceeded ${this.maxBytes} bytes`));
+    if (this.policy === "truncate") {
+      const prefix = takePrefix(value, this.maxBytes);
+      return [{ text: `${prefix}…`, raw: `${prefix}…${terminated ? "\n" : ""}`, terminated }];
+    }
+    const lines: FramedLine[] = [];
+    let remaining = value;
+    while (remaining) {
+      const prefix = takePrefix(remaining, this.maxBytes);
+      remaining = remaining.slice(prefix.length);
+      const last = remaining.length === 0;
+      lines.push({ text: prefix, raw: `${prefix}${last && terminated ? "\n" : ""}`, terminated: last && terminated });
+    }
+    return lines;
+  }
+}
+
 /** A text Capture with bounded queued work and source pause/resume backpressure. */
 class TextCapture implements TextStreamCaptureHandle {
   readonly done: Promise<StreamCaptureResult>;
@@ -75,8 +143,7 @@ class TextCapture implements TextStreamCaptureHandle {
   private readonly mirrorTargets: LogTargets;
   private readonly fileMode: CaptureFileMode;
   private readonly consumerPolicy: CaptureConsumerErrorPolicy;
-  private readonly maxLineBytes: number;
-  private readonly lineOverflowPolicy: CaptureLineOverflowPolicy;
+  private readonly framer: LineFramer;
   private state: CaptureState = "active";
   private work: Promise<void> = Promise.resolve();
   private failure: Promise<void> | undefined;
@@ -85,8 +152,6 @@ class TextCapture implements TextStreamCaptureHandle {
   private lines = 0;
   private pendingBytes = 0;
   private paused = false;
-  private lineBuffer = "";
-  private discardingLongLine = false;
   private readonly dataListener: (chunk: Buffer | string) => void;
   private readonly endListener: () => void;
   private readonly closeListener: () => void;
@@ -107,8 +172,7 @@ class TextCapture implements TextStreamCaptureHandle {
     this.mirrorTargets = options.mirrorTargets ?? defaultMirrorTargets;
     this.fileMode = options.fileMode ?? "truncate";
     this.consumerPolicy = options.consumerErrorPolicy ?? "fail";
-    this.maxLineBytes = options.maxLineBytes ?? 1024 * 1024;
-    this.lineOverflowPolicy = options.lineOverflowPolicy ?? "split";
+    this.framer = new LineFramer(options.maxLineBytes ?? 1024 * 1024, options.lineOverflowPolicy ?? "split");
     this.done = new Promise<StreamCaptureResult>((resolve, reject) => { this.resolve = resolve; this.reject = reject; });
     void this.done.catch(() => undefined);
     this.dataListener = (chunk) => this.receive(chunk);
@@ -158,7 +222,8 @@ class TextCapture implements TextStreamCaptureHandle {
       this.source.pause();
       this.paused = true;
     }
-    const next = this.work.then(task, task);
+    const guardedTask = async (): Promise<void> => { if (this.failure) return; await task(); };
+    const next = this.work.then(guardedTask, guardedTask);
     this.work = next.then(
       () => this.afterTask(bytes),
       (reason: unknown) => {
@@ -179,52 +244,18 @@ class TextCapture implements TextStreamCaptureHandle {
 
   private async processDecoded(text: string, final: boolean, timestamp: Date): Promise<void> {
     if (this.options.file && !this.options.timestampLines && text) await this.writeFile(this.options.stripAnsiInFile ? this.dispatcher.toolkit.stripAnsi(text) : text);
-    this.lineBuffer += text;
-    while (true) {
-      const newline = this.lineBuffer.indexOf("\n");
-      if (newline < 0) break;
-      const raw = this.lineBuffer.slice(0, newline + 1);
-      this.lineBuffer = this.lineBuffer.slice(newline + 1);
-      const value = raw.endsWith("\r\n") ? raw.slice(0, -2) : raw.slice(0, -1);
-      const wasDiscarding = this.discardingLongLine;
-      this.discardingLongLine = false;
-      if (wasDiscarding) continue;
-      await this.emitLine(value, true, timestamp, raw);
-    }
-    await this.enforceLineLimit(timestamp);
-    if (final && this.lineBuffer) {
-      const value = this.lineBuffer;
-      this.lineBuffer = "";
-      this.discardingLongLine = false;
-      await this.emitLine(value, false, timestamp, value);
-    }
+    for (const line of this.framer.push(text, final)) await this.emitLine(line, timestamp);
   }
 
-  private async enforceLineLimit(timestamp: Date): Promise<void> {
-    while (Buffer.byteLength(this.lineBuffer) > this.maxLineBytes) {
-      if (this.lineOverflowPolicy === "error") throw new LineOverflowFailure(new Error(`Capture line exceeded ${this.maxLineBytes} bytes`));
-      const prefix = takePrefix(this.lineBuffer, this.maxLineBytes);
-      this.lineBuffer = this.lineBuffer.slice(prefix.length);
-      if (this.lineOverflowPolicy === "truncate") {
-        if (!this.discardingLongLine) {
-          this.discardingLongLine = true;
-          await this.emitLine(`${prefix}…`, false, timestamp, prefix);
-        }
-        return;
-      }
-      await this.emitLine(prefix, false, timestamp, prefix);
-    }
-  }
-
-  private async emitLine(value: string, terminated: boolean, timestamp: Date, raw: string): Promise<void> {
+  private async emitLine(line: FramedLine, timestamp: Date): Promise<void> {
     this.lines += 1;
     if (this.options.file && this.options.timestampLines) {
-      const fileValue = `[${this.dispatcher.toolkit.formatTime(undefined, timestamp)}] ${this.options.stripAnsiInFile ? this.dispatcher.toolkit.stripAnsi(raw) : raw}`;
+      const fileValue = `[${this.dispatcher.toolkit.formatTime(undefined, timestamp)}] ${this.options.stripAnsiInFile ? this.dispatcher.toolkit.stripAnsi(line.raw) : line.raw}`;
       await this.writeFile(fileValue);
     }
-    if (this.displayLevel !== "none") this.binding.write(this.displayLevel, [value], this.mirrorTargets);
+    if (this.displayLevel !== "none") this.binding.write(this.displayLevel, [line.text], this.mirrorTargets);
     if (!this.options.onLine) return;
-    try { await this.options.onLine(asLine(value, terminated, this.lines, timestamp)); }
+    try { await this.options.onLine(asLine(line.text, line.terminated, this.lines, timestamp)); }
     catch (reason) {
       if (this.consumerPolicy === "ignore") return;
       throw new ConsumerFailure(toError(reason));
@@ -275,6 +306,11 @@ class TextCapture implements TextStreamCaptureHandle {
     if (this.state === "settled") return;
     this.state = "finishing";
     this.detachSource();
+    // fail() may be called by the current queue handler. Defer draining so we
+    // never await that handler from inside itself, then close after all earlier
+    // accepted work has either finished or been skipped.
+    await nextTurn();
+    await this.work.catch(() => undefined);
     await this.output?.close().catch(() => undefined);
     this.state = "settled";
     this.detach();
@@ -289,6 +325,7 @@ class TextCapture implements TextStreamCaptureHandle {
     if (!this.source.destroyed) this.source.pause();
   }
   private drainReadable(): void {
+    this.source.removeListener("data", this.dataListener);
     let chunk: Buffer | string | null;
     while ((chunk = this.source.read()) !== null) this.receive(chunk);
   }
@@ -347,7 +384,10 @@ class BinaryCapture implements BinaryStreamCaptureHandle {
     this.pendingBytes += data.length;
     if (this.pendingBytes > this.queueSettings.maxPendingBytes) { void this.fail(this.makeError("CAPTURE_BUFFER_OVERFLOW", new Error(`Capture queued data exceeded ${this.queueSettings.maxPendingBytes} bytes`), "error")); return; }
     if (this.pendingBytes >= this.queueSettings.highWaterMarkBytes && !this.paused && !this.source.destroyed) { this.source.pause(); this.paused = true; }
-    const write = this.work.then(() => this.output.write(this.options.file, data, this.fileMode), () => this.output.write(this.options.file, data, this.fileMode));
+    const write = this.work.then(
+      () => this.failure ? undefined : this.output.write(this.options.file, data, this.fileMode),
+      () => this.failure ? undefined : this.output.write(this.options.file, data, this.fileMode),
+    );
     this.work = write.then(
       () => this.afterWrite(data.length),
       (reason: unknown) => { this.afterWrite(data.length); void this.fail(this.makeError("CAPTURE_FILE_ERROR", toError(reason), "error")); },
@@ -356,6 +396,7 @@ class BinaryCapture implements BinaryStreamCaptureHandle {
   private afterWrite(bytes: number): void { this.pendingBytes = Math.max(0, this.pendingBytes - bytes); if (this.paused && this.pendingBytes <= this.queueSettings.lowWaterMarkBytes && this.state === "active" && !this.source.destroyed) { this.paused = false; this.source.resume(); } }
   private async finish(reason: "end" | "manual-close" | "logger-close"): Promise<void> {
     if (this.state !== "active") return this.done.then(() => undefined, () => undefined);
+    this.drainReadable();
     this.state = "finishing"; this.detachSource();
     try { await this.work; await this.output.close(); if (this.failure) return this.failure; this.settleSuccess({ ...resultBase(this.startedAt, reason, this.bytes, this.options.file), chunks: this.chunks, sha256: this.hash?.digest("hex") }); }
     catch (failure) { await this.fail(this.makeError("CAPTURE_FILE_ERROR", toError(failure), "error")); }
@@ -363,8 +404,9 @@ class BinaryCapture implements BinaryStreamCaptureHandle {
   private makeError(code: CaptureErrorCode, cause: Error, reason: CaptureEndReason): CaptureError { return new CaptureError(code, cause.message, resultBase(this.startedAt, reason, this.bytes, this.options.file), cause); }
   private settleSuccess(result: BinaryCaptureResult): void { if (this.state === "settled") return; this.state = "settled"; this.detach(); this.dispatcher.removeCapture(this); this.resolve(result); }
   private fail(error: CaptureError): Promise<void> { if (!this.failure) this.failure = this.finalizeFailure(error); return this.failure; }
-  private async finalizeFailure(error: CaptureError): Promise<void> { if (this.state === "settled") return; this.state = "finishing"; this.detachSource(); await this.output.close().catch(() => undefined); this.state = "settled"; this.detach(); this.dispatcher.removeCapture(this); this.reject(error); }
+  private async finalizeFailure(error: CaptureError): Promise<void> { if (this.state === "settled") return; this.state = "finishing"; this.detachSource(); await nextTurn(); await this.work.catch(() => undefined); await this.output.close().catch(() => undefined); this.state = "settled"; this.detach(); this.dispatcher.removeCapture(this); this.reject(error); }
   private detachSource(): void { this.source.removeListener("data", this.dataListener); this.source.removeListener("end", this.endListener); this.source.removeListener("close", this.closeListener); this.source.removeListener("error", this.errorListener); if (!this.source.destroyed) this.source.pause(); }
+  private drainReadable(): void { this.source.removeListener("data", this.dataListener); let chunk: Buffer | string | null; while ((chunk = this.source.read()) !== null) this.receive(chunk); }
   private detach(): void { this.detachSource(); this.options.signal?.removeEventListener("abort", this.abortListener); }
 }
 
@@ -421,10 +463,10 @@ class ProcessCapture implements ProcessCaptureHandle {
   }
   private partial(reason: CaptureEndReason, channel?: "stdout" | "stderr" | "process") {
     const endedAt = new Date();
-    return { reason, startedAt: this.startedAt, endedAt, durationMs: endedAt.valueOf() - this.startedAt.valueOf(), exitCode: this.exitCode, signal: this.exitSignal, stdoutBytes: this.stdout.bytes, stderrBytes: this.stderr.bytes, stdoutLines: this.stdout.lines, stderrLines: this.stderr.lines, stdoutFile: this.options.stdoutFile, stderrFile: this.options.stderrFile, stdoutSha256: this.stdout.digest(), stderrSha256: this.stderr.digest(), failedChannel: channel };
+    return { reason, startedAt: this.startedAt, endedAt, durationMs: endedAt.valueOf() - this.startedAt.valueOf(), exitCode: this.exitCode, signal: this.exitSignal, stdoutBytes: this.stdout.bytes, stderrBytes: this.stderr.bytes, stdoutLines: this.stdout.lines, stderrLines: this.stderr.lines, stdoutFile: this.options.stdoutFile, stderrFile: this.options.stderrFile, stdoutSha256: this.stdout.snapshotDigest(), stderrSha256: this.stderr.snapshotDigest(), failedChannel: channel };
   }
   private makeError(code: CaptureErrorCode, cause: Error, reason: CaptureEndReason): CaptureError { return new CaptureError(code, cause.message, this.partial(reason, "process"), cause); }
-  private withChannel(error: CaptureError, channel: "stdout" | "stderr"): CaptureError { return new CaptureError(error.code, error.message, { ...this.partial(error.partialResult.reason, channel), ...error.partialResult, failedChannel: channel }, error.cause); }
+  private withChannel(error: CaptureError, channel: "stdout" | "stderr"): CaptureError { return new CaptureError(error.code, error.message, { ...error.partialResult, ...this.partial(error.partialResult.reason, channel), failedChannel: channel }, error.cause); }
   private settleSuccess(result: ProcessCaptureResult): void { if (this.state === "settled") return; this.state = "settled"; this.detach(); this.dispatcher.removeCapture(this); this.resolve(result); }
   private fail(error: CaptureError): Promise<void> { if (!this.failure) this.failure = this.finalizeFailure(error); return this.failure; }
   private async finalizeFailure(error: CaptureError): Promise<void> { if (this.state === "settled") return; this.state = "finishing"; this.detachChild(); await Promise.all([this.stdout.abort(), this.stderr.abort()]); this.state = "settled"; this.detach(); this.dispatcher.removeCapture(this); this.reject(error); }
@@ -442,14 +484,11 @@ class ProcessChannel {
   private readonly fileMode: CaptureFileMode;
   private readonly mirrorTargets: LogTargets;
   private readonly consumerPolicy: CaptureConsumerErrorPolicy;
-  private readonly maxLineBytes: number;
-  private readonly lineOverflowPolicy: CaptureLineOverflowPolicy;
+  private readonly framer: LineFramer;
   private work: Promise<void> = Promise.resolve();
   private pendingBytes = 0;
   private paused = false;
   private accepting = true;
-  private lineBuffer = "";
-  private discardingLongLine = false;
   private readonly dataListener: (chunk: Buffer | string) => void;
   private readonly errorListener: (error: Error) => void;
 
@@ -470,8 +509,7 @@ class ProcessChannel {
     this.fileMode = options.fileMode ?? "truncate";
     this.mirrorTargets = options.mirrorTargets ?? defaultMirrorTargets;
     this.consumerPolicy = options.consumerErrorPolicy ?? "fail";
-    this.maxLineBytes = options.maxLineBytes ?? 1024 * 1024;
-    this.lineOverflowPolicy = options.lineOverflowPolicy ?? "split";
+    this.framer = new LineFramer(options.maxLineBytes ?? 1024 * 1024, options.lineOverflowPolicy ?? "split");
     this.dataListener = (chunk) => this.receive(chunk);
     this.errorListener = (error) => this.onFailure(this.channel, this.makeError("CAPTURE_SOURCE_ERROR", error, "error"));
     source?.on("data", this.dataListener);
@@ -502,28 +540,14 @@ class ProcessChannel {
   }
   private afterTask(bytes: number): void { this.pendingBytes = Math.max(0, this.pendingBytes - bytes); if (this.paused && this.pendingBytes <= this.queueSettings.lowWaterMarkBytes && this.accepting && !this.source?.destroyed) { this.paused = false; this.source?.resume(); } }
   private async processLines(text: string, final: boolean, timestamp: Date): Promise<void> {
-    this.lineBuffer += text;
-    while (true) {
-      const newline = this.lineBuffer.indexOf("\n"); if (newline < 0) break;
-      const raw = this.lineBuffer.slice(0, newline + 1); this.lineBuffer = this.lineBuffer.slice(newline + 1);
-      const value = raw.endsWith("\r\n") ? raw.slice(0, -2) : raw.slice(0, -1); const wasDiscarding = this.discardingLongLine; this.discardingLongLine = false;
-      if (wasDiscarding) continue;
-      await this.emitLine(value, true, timestamp);
-    }
-    while (Buffer.byteLength(this.lineBuffer) > this.maxLineBytes) {
-      if (this.lineOverflowPolicy === "error") throw new LineOverflowFailure(new Error(`Capture line exceeded ${this.maxLineBytes} bytes`));
-      const prefix = takePrefix(this.lineBuffer, this.maxLineBytes); this.lineBuffer = this.lineBuffer.slice(prefix.length);
-      if (this.lineOverflowPolicy === "truncate") { if (!this.discardingLongLine) { this.discardingLongLine = true; await this.emitLine(`${prefix}…`, false, timestamp); } return; }
-      await this.emitLine(prefix, false, timestamp);
-    }
-    if (final && this.lineBuffer) { const value = this.lineBuffer; this.lineBuffer = ""; this.discardingLongLine = false; await this.emitLine(value, false, timestamp); }
+    for (const line of this.framer.push(text, final)) await this.emitLine(line, timestamp);
   }
-  private async emitLine(value: string, terminated: boolean, timestamp: Date): Promise<void> {
+  private async emitLine(line: FramedLine, timestamp: Date): Promise<void> {
     this.lines += 1;
-    if (this.displayLevel !== "none") this.binding.write(this.displayLevel, [value], this.mirrorTargets);
+    if (this.displayLevel !== "none") this.binding.write(this.displayLevel, [line.text], this.mirrorTargets);
     const listener = this.options.onLine ?? (this.channel === "stdout" ? this.options.onStdoutLine : this.options.onStderrLine);
     if (!listener) return;
-    try { await listener({ ...asLine(value, terminated, this.lines, timestamp), channel: this.channel }); }
+    try { await listener({ ...asLine(line.text, line.terminated, this.lines, timestamp), channel: this.channel }); }
     catch (reason) { if (this.consumerPolicy === "ignore") return; throw new ConsumerFailure(toError(reason)); }
   }
   private async writeFile(value: Buffer): Promise<void> { if (!this.file || !this.filePath || !value.length) return; this.hash?.update(value); await this.file.write(this.filePath, value, this.fileMode); }
@@ -531,7 +555,8 @@ class ProcessChannel {
   async finish(): Promise<void> { this.accepting = false; this.detach(); const rest = this.decoder.end(); this.enqueue(Buffer.byteLength(rest, this.options.encoding), async () => { if (rest && this.filePath && !this.options.preserveRawBytes) await this.writeFile(Buffer.from(this.options.stripAnsiInFiles ? this.dispatcher.toolkit.stripAnsi(rest) : rest, this.options.encoding)); await this.processLines(rest, true, new Date()); }); await this.work; await this.file?.close(); }
   async abort(): Promise<void> { this.accepting = false; this.detach(); await this.work; await this.file?.close(); }
   digest(): string | undefined { return this.hash?.digest("hex"); }
-  private makeError(code: CaptureErrorCode, cause: Error, reason: CaptureEndReason): CaptureError { return new CaptureError(code, cause.message, { ...resultBase(new Date(), reason, this.bytes, this.filePath), file: this.filePath, failedChannel: this.channel }, cause); }
+  snapshotDigest(): string | undefined { return this.hash?.copy().digest("hex"); }
+  private makeError(code: CaptureErrorCode, cause: Error, reason: CaptureEndReason): CaptureError { return new CaptureError(code, cause.message, { reason, startedAt: new Date(0), endedAt: new Date(), durationMs: 0, bytes: this.bytes, file: this.filePath, failedChannel: this.channel }, cause); }
   private detach(): void { this.source?.removeListener("data", this.dataListener); this.source?.removeListener("error", this.errorListener); if (!this.source?.destroyed) this.source?.pause(); }
 }
 
@@ -546,6 +571,8 @@ function takePrefix(text: string, maxBytes: number): string {
   }
   return text.slice(0, Math.max(end, 1));
 }
+
+function nextTurn(): Promise<void> { return new Promise((resolve) => setImmediate(resolve)); }
 
 export class CaptureManager {
   constructor(private readonly dispatcher: Dispatcher) {}

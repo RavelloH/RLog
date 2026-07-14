@@ -8,6 +8,8 @@
 - Added output-specific file error policies and defensive copies for mutable configuration arrays.
 - Added `withSpan()` and `progressTask()` structured lifecycle helpers.
 - Removed the unreachable `CAPTURE_DECODE_ERROR` code; text Capture documents Node.js replacement decoding instead.
+- Fixed bounded line framing for complete newline-delimited chunks and truncated final tails.
+- Fixed Capture failure finalization to drain accepted work before closing files, Binary Capture draining during close, non-destructive process hash snapshots, and independent JSONL file/Writable delivery.
 
 ## 3.0.0
 

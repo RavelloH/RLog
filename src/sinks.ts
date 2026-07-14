@@ -315,17 +315,19 @@ export class JsonlFileSink implements LogSink {
       event: record.event ? { type: record.event.type, data: this.toolkit.safeJson(record.event.data ?? {}) } : null,
     };
     const line = `${JSON.stringify(value)}\n`;
-    if (this.config.jsonlFilePath) await this.file.write(this.config.jsonlFilePath, line);
     const output = this.resolveOutput();
-    if (output) {
-      try { await writeToExternal(output, line); }
-      catch (reason) {
+    const fileWrite = this.config.jsonlFilePath ? this.file.write(this.config.jsonlFilePath, line) : Promise.resolve();
+    const outputWrite = output
+      ? writeToExternal(output, line).catch((reason: unknown) => {
         const error = toError(reason);
         this.outputDisabled = true;
         this.report(error, { output: "jsonl", operation: "write" });
         throw error;
-      }
-    }
+      })
+      : Promise.resolve();
+    const outcomes = await Promise.allSettled([fileWrite, outputWrite]);
+    const failed = outcomes.find((outcome): outcome is PromiseRejectedResult => outcome.status === "rejected");
+    if (failed) throw failed.reason;
   }
   flush(): Promise<void> { return this.file.flush(); }
   close(): Promise<void> { return this.file.close(); }

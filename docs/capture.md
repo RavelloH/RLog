@@ -21,7 +21,7 @@ Capture files use `fileMode: "truncate"` by default. Use `"exclusive"` for evide
 
 All Capture options accept `signal`. Aborting stops accepting new source data, flushes queued writes, closes Capture files, and rejects `done` with `CAPTURE_ABORTED`. It does not terminate a process unless `killProcessOnAbort` is set.
 
-Capture pauses a readable source at `highWaterMarkBytes` (default 4 MiB) and resumes it below `lowWaterMarkBytes` (default 1 MiB). `maxPendingBytes` defaults to 16 MiB and rejects with `CAPTURE_BUFFER_OVERFLOW` instead of allowing unbounded memory growth. Text captures also default `maxLineBytes` to 1 MiB; choose `lineOverflowPolicy: "split"`, `"truncate"`, or `"error"`.
+Capture pauses a readable source at `highWaterMarkBytes` (default 4 MiB) and resumes it below `lowWaterMarkBytes` (default 1 MiB). `maxPendingBytes` defaults to 16 MiB and rejects with `CAPTURE_BUFFER_OVERFLOW` instead of allowing unbounded memory growth. A shared line framer applies `maxLineBytes` (default 1 MiB) before both complete newline-delimited lines and unterminated tails are delivered; choose `lineOverflowPolicy: "split"`, `"truncate"`, or `"error"`.
 
 ## Security
 

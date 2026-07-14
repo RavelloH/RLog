@@ -71,6 +71,23 @@ test("JSONL Writable failures use the jsonl file-error policy while the file des
   } finally { temp.cleanup(); }
 });
 
+test("JSONL still reaches its Writable when the file destination fails", async () => {
+  const temp = temporaryDirectory();
+  try {
+    const output = memoryWritable();
+    const rlog = createRlog({
+      screenOutput: "none",
+      jsonlFilePath: temp.directory,
+      jsonlOutput: output.stream,
+      fileErrorPolicy: { jsonl: "ignore" },
+    });
+    rlog.jsonl.event("agent.visible", { runId: "r-1" });
+    await rlog.close();
+    const record = JSON.parse(output.text());
+    assert.equal(record.event.type, "agent.visible");
+  } finally { temp.cleanup(); }
+});
+
 test("spans and progress tasks emit structured lifecycle events with child context", async () => {
   const temp = temporaryDirectory();
   try {
