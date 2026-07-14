@@ -6,7 +6,8 @@ const Rlog = require("../../dist/index.js");
 
 function temporaryDirectory() {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "rlog-v3-"));
-  return { directory, cleanup: () => fs.rmSync(directory, { recursive: true, force: true }) };
+  // Windows can retain a just-closed WriteStream directory entry briefly.
+  return { directory, cleanup: () => fs.rmSync(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }) };
 }
 
 function memoryWritable() {
