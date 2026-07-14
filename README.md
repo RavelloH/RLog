@@ -124,13 +124,13 @@ rlog.progress(35, 100);
 const rlog = new Rlog({ logFilePath: "./logs/app.log" });
 rlog.text.info("plain text record");
 
-// 按需初始化或直接写入原始文本
-rlog.text.init();
+// 按需初始化或直接写入受控的原始文本
+await rlog.text.init();
 await rlog.text.writeRaw("raw line\n");
-const stream = rlog.text.stream;
 ```
 
 `rlog.file` 是 `rlog.text` 的弃用别名，两者指向同一对象。请在新代码中使用 `text`。
+`rlog.text.stream`（以及兼容的 `rlog.file.logStream`）是高级逃生口：直接写底层流会绕过轮转统计、受控写入顺序和延迟文件错误交付。新代码请使用 `rlog.text.writeRaw()`。
 
 ### JSONL
 
@@ -523,3 +523,9 @@ npm pack --dry-run
 ```
 
 贡献说明见 [CONTRIBUTING.md](CONTRIBUTING.md)。
+
+详细文档：
+
+- [从 v2 迁移到 v3](docs/migration-v3.md)
+- [Capture 指南](docs/capture.md)
+- [文件轮转](docs/rotation.md)
