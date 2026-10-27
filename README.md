@@ -11,14 +11,15 @@ RLog 是面向 Node.js CLI、自动化流程、构建工具和硬件工具的 Ty
 - 文本、进程和二进制流 Capture，支持 SHA-256、ANSI 清理与 UTF-8 跨 chunk 解码
 - `flush()`、幂等 `close()`、有序 `exit()` 生命周期
 - `blockedWordsList` 文本遮蔽与 `redactKeys` 结构化字段脱敏
-- 文本和 JSONL 的按大小轮转
-- **3.1**：异步上下文、延迟日志、有界队列与字节预算
-- **3.1**：文件隔离、文件同步与自动恢复、跨轮转 JSONL 查询
-- **3.1**：Flight Recorder、Processor / Transport 扩展和内部诊断
+- 文本和 JSONL 的按大小轮转，以及按 Logger 实例隔离文件
+- 异步上下文传播与延迟日志，减少不必要的诊断开销
+- 可配置的队列和记录大小预算，以及明确的过载处理策略
+- 文件故障恢复、同步检查点，以及跨轮转文件的流式 JSONL 查询
+- 有界内存 Flight Recorder、Processor / Transport 扩展与运行时诊断
 
 ## 安装
 
-RLog v3 需要 Node.js 20 或更高版本。以下 3.1 API 需使用 **rlog-js 3.1.0 或更新版本**。
+需要 Node.js 20 或更高版本。
 
 ```bash
 npm install rlog-js
@@ -163,6 +164,10 @@ JSONL 仅写入 JSONL 文件，不会显示到终端或写入文本文件。
 
 显式时间会原样保留：`Date` 写为 ISO 字符串；数字、字符串、布尔值和 `null` 保持 JSON 值；`bigint` 写为如 `"9n"` 的安全字符串；`undefined` 写为 `"[undefined]"`。因此同一条记录在 text 和 JSONL 中不会拥有不同的时间含义。
 
+### 流式查询 JSONL 历史记录
+
+`listJsonlFiles()` 可列出活动、轮转及实例隔离文件；`readJsonl()` 可按等级、事件类型、时间和数量筛选，并以流式方式读取。用法及并发轮转限制见[可靠性、资源预算与诊断](docs/reliability.md)。
+
 ## 时间、模板与时区
 
 用 `at(timestamp)` 为一次或多次调用绑定明确时间。它只创建轻量 facade，不会创建新的文件流或 Dispatcher。
@@ -224,6 +229,19 @@ const rlog = new Rlog({
   fileMetadataOutput: "block",
 });
 ```
+
+### 异步上下文与延迟日志
+
+`withContext()` 会在异步调用链中传播上下文，并隔离并发执行的作用域：
+
+```js
+await rlog.withContext({ requestId: "req-42" }, async () => {
+  await doWork();
+  rlog.jsonl.event("request.completed", { ok: true });
+});
+```
+
+`logLazy(level, argumentsFactory)`、`debugLazy()` 等方法仅在目标需要处理相应等级时执行参数工厂；工厂应返回参数数组。
 
 ## 结构化事件
 
@@ -288,6 +306,10 @@ app.log.2
 ```
 
 一条记录始终完整写入单个文件；超出阈值的单条记录允许完整写入新文件。轮转与写入串行执行，`flush()` 和 `close()` 都会等待其完成。Capture 文件不参与轮转。
+
+### 实例隔离
+
+设置 `textFileIsolation: "instance"` 或 `jsonlFileIsolation: "instance"`，可为每个 Logger 实例创建独立文件及轮转序列。默认的 `"shared"` 保留共享路径行为。实例隔离可减少轮转冲突，但不提供跨进程文件锁，也不限制所有实例的总磁盘用量。
 
 ## Capture
 
@@ -472,6 +494,10 @@ const rlog = new Rlog({
 
 `context.output` 为 `text`、`jsonl` 或 `capture`；`context.operation` 为 `open`、`write`、`flush`、`close` 或 `rotate`。
 
+### 恢复与同步
+
+文件 Sink 失效后，可调用 `recoverFiles()` 主动恢复；配置 `autoRecoverFiles` 可在新记录到来且退避冷却期结束时自动尝试。`syncFiles()` 会排空待处理日志，并请求操作系统同步已打开的本地文件。恢复机制不会重放写入结果不确定的旧记录，文件同步也不能保证所有硬件或断电故障下绝对不丢数据。详细限制见[可靠性指南](docs/reliability.md)。
+
 ## 配置
 
 ```ts
@@ -511,6 +537,21 @@ const rlog = new Rlog({
 });
 ```
 
+### 队列与记录大小预算
+
+`maxQueuedRecords`、`maxQueuedBytes` 和 `maxRecordBytes` 可限制待处理记录数量、队列序列化字节数及单条记录大小：
+
+```js
+const rlog = new Rlog({
+  maxQueuedRecords: 4096,
+  maxQueuedBytes: 2 * 1024 * 1024,
+  maxRecordBytes: 16 * 1024,
+  queueOverflowPolicy: "drop-debug", // 或 "throw"
+});
+```
+
+`"drop-debug"` 只会计数并丢弃超限的 TRACE/DEBUG 记录；更高等级的记录不会被静默丢弃。字节预算是序列化大小估算，不等同于进程 RSS。未设置上限时保留默认队列行为。
+
 `setConfig()` 立即更新当前实例。`setConfigGlobal()` 会立即更新所有仍处于打开状态的实例，并成为后续新实例的默认值；已关闭 Logger 会从全局实例集合释放。传入的 rotation、context、脱敏数组和颜色规则会被复制，后续修改原对象不会影响 RLog：
 
 ```js
@@ -534,6 +575,12 @@ const {
 
 `CaptureError` 带有 `code`、`cause` 与 `partialResult`。文本 Capture 使用 Node.js 宽松 UTF-8 解码（非法字节会被替换，不产生 decode error）；错误代码包括 `CAPTURE_SOURCE_ERROR`、`CAPTURE_FILE_ERROR`、`CAPTURE_ABORTED`、`CAPTURE_ABORTED_BY_LOGGER_CLOSE`、`CAPTURE_CONSUMER_ERROR`、`CAPTURE_BUFFER_OVERFLOW` 与 `CAPTURE_LINE_TOO_LONG`。
 
+## 诊断与扩展
+
+Flight Recorder 可在有界内存中保留近期诊断记录，即使常规输出目标过滤了 DEBUG/TRACE。可使用 `flightRecorderStatus()` 查看状态，通过 `flightRecorderSnapshot()` 获取快照，并调用 `exportFlightRecorder()` 显式导出；它不会在进程崩溃时自动导出。
+
+Processor 可按顺序转换或过滤记录，Transport 可将记录写入额外目标，两者均参与 `flush()` / `close()` 生命周期。`diagnostics()` 可查看队列积压、丢弃数量、文件故障、恢复统计及扩展处理错误。插件属于受信任的应用代码；安全边界与配置示例见[可靠性、资源预算与诊断](docs/reliability.md)。
+
 ## 开发
 
 ```bash
@@ -548,168 +595,7 @@ npm pack --dry-run
 
 详细文档：
 
-- [从 v2 迁移到 v3](docs/migration-v3.md)
+- [迁移指南](docs/migration-v3.md)
 - [Capture 指南](docs/capture.md)
 - [文件轮转](docs/rotation.md)
 - [可靠性、资源预算与诊断](docs/reliability.md)
-
-
-
-## RLog 3.1.0：可靠性、诊断与扩展
-
-3.1 延续 3.0 的 Screen、Text、JSONL、Capture 和 Logger API，在此基础上增加了长期运行服务和 Agent 所需的资源保护、故障恢复与诊断功能。**大部分增强为可选配置，未启用时保留 v3 原有的队列及文件命名行为。**
-
-| 类别 | 新 API / 配置 | 作用 |
-| --- | --- | --- |
-| 异步上下文 | `withContext()` | 通过 AsyncLocalStorage 自动关联请求、设备和操作 |
-| 延迟日志 | `isEnabled()`、`logLazy()`、`debugLazy()` | 过滤等级后再生成昂贵参数 |
-| 资源预算 | `maxQueuedRecords`、`maxQueuedBytes`、`maxRecordBytes` | 限制待写记录数量及估算大小 |
-| 过载处理 | `queueOverflowPolicy` | 明确抛错，或按配置丢弃 TRACE/DEBUG |
-| 文件隔离 | `textFileIsolation`、`jsonlFileIsolation` | 每个 Logger 实例独立保存及轮转 |
-| 文件可靠性 | `recoverFiles()`、`autoRecoverFiles`、`syncFiles()` | 主动/退避恢复与 OS 级 fsync |
-| 日志读取 | `listJsonlFiles()`、`readJsonl()` | 查询当前、轮转及实例隔离文件 |
-| 故障现场 | `flightRecorder` | 有界内存环形日志，按需导出 |
-| 自定义流水线 | `processors`、`transports` | 异步过滤、转换与额外输出 |
-| 可观测性 | `diagnostics()`、`flightRecorderStatus()` | 记录积压、错误、恢复和淘汰数量 |
-
-### 自动异步上下文与延迟日志
-
-`withContext()` 在并行请求之间隔离上下文，并支持跨 `await` 继承；与既有 `child()` 可以组合使用：
-
-```js
-const rlog = new Rlog({
-  jsonlFilePath: "./logs/events.jsonl",
-  jsonlLogLevel: "info",
-});
-
-await rlog.withContext({ requestId: "req-42", deviceId: "board-1" }, async () => {
-  await connectDevice();
-  rlog.jsonl.event("device.connected", { connected: true });
-  rlog.debugLazy(() => ["expensive snapshot", collectDebugState()]);
-});
-await rlog.close();
-```
-
-`logLazy(level, argumentsFactory)` 以及目标限定的 `rlog.jsonl.debugLazy()` 只在目标需要时执行工厂函数。工厂函数需要**返回一个参数数组**，而不是已经格式化的字符串。
-
-### 队列限制与过载保护
-
-```js
-const rlog = new Rlog({
-  jsonlFilePath: "./logs/events.jsonl",
-  maxQueuedRecords: 4096,
-  maxQueuedBytes: 2 * 1024 * 1024,
-  maxRecordBytes: 16 * 1024,
-  queueOverflowPolicy: "drop-debug", // 默认 "throw"
-});
-```
-
-`maxQueuedRecords` 限制已接受、尚未完全派发的记录数；`maxQueuedBytes` 和 `maxRecordBytes` 限制其**序列化估算大小**，并非严格限制进程 RSS。若单条日志在 `.meta()`、Event 或 Processor 阶段被扩充，写入前会重新检查。
-
-`drop-debug` 是显式选项：只允许超限的 TRACE/DEBUG 日志被计数丢弃。INFO 及更严重日志不能被这种策略静默丢弃，而会抛出 `RLogQueueFullError`、`RLogQueueBytesExceededError` 或 `RLogRecordTooLargeError`。部分延迟附加数据引起的错误会在 `flush()` / `close()` 时交付。**不配置上限时保留 v3 原有普通日志队列行为。**
-
-### 多进程安全隔离、文件恢复与同步
-
-```js
-const rlog = new Rlog({
-  jsonlFilePath: "./logs/events.jsonl",
-  jsonlFileIsolation: "instance",
-  jsonlRotation: { maxBytes: 2 * 1024 * 1024, maxFiles: 3 },
-  fileErrorPolicy: "disable",
-  autoRecoverFiles: {
-    initialDelayMs: 1000,
-    maxDelayMs: 60000,
-    multiplier: 2,
-  },
-});
-
-rlog.jsonl.event("worker.started", { pid: process.pid });
-console.log(rlog.filePaths().jsonl); // PID + 唯一 Logger 实例标识
-await rlog.syncFiles();              // 等待写入，并请求 OS fsync
-console.log(rlog.diagnostics().recovery.jsonl);
-await rlog.close();
-```
-
-文本文件也支持 `textFileIsolation: "instance"`；默认 `"shared"` 保持此前的文件路径。隔离模式为每个实例创建**不同的文件与轮转序列**，避免跨进程轮转竞争，**并不提供对同一个文件的跨进程锁**。每个实例有各自的保留配额，历史实例文件仍需应用清理。
-
-文件 Sink 失效后可调用 `recoverFiles()` 主动恢复；启用 `autoRecoverFiles` 时，会在下一条新日志到来且退避冷却期结束后尝试恢复。无需轮询定时器，失败期间结果不确定的记录**不会自动重放**。`syncFiles()` 向操作系统请求 `fsync`，但不能保证所有硬件故障下绝对不丢数据。
-
-### 跨轮转文件的流式 JSONL 查询
-
-```js
-const { listJsonlFiles, readJsonl } = require("rlog-js");
-
-const paths = await listJsonlFiles("./logs/events.jsonl");
-
-for await (const item of readJsonl({
-  filePath: "./logs/events.jsonl",
-  levels: ["warn", "error", "fatal"],
-  eventTypes: ["worker.failed"],
-  since: new Date(Date.now() - 24 * 60 * 60 * 1000),
-  limit: 100,
-})) {
-  console.log(item.filePath, item.lineNumber, item.record);
-}
-```
-
-读取器可识别当前文件、历史轮转文件及实例隔离文件，支持筛选级别、事件类型和时间下限。解析坏行默认抛出包含文件与行号的异常，可选 `skipMalformed: true` 跳过。不同实例之间**不保证全局时间顺序**，并发轮转时也不保证快照隔离。
-
-### Flight Recorder：故障前的诊断上下文
-
-```js
-const rlog = new Rlog({
-  screenOutput: "none",
-  flightRecorder: {
-    maxRecords: 200,
-    maxBytes: 256 * 1024,
-    captureLevels: ["trace", "debug"], // 默认
-    // includeEventData: false,       // 默认不保留事件 payload
-  },
-});
-rlog.debug("connecting websocket");
-console.log(rlog.flightRecorderStatus());
-const recent = rlog.flightRecorderSnapshot();
-await rlog.exportFlightRecorder("./logs/incident-1.jsonl");
-rlog.clearFlightRecorder();
-await rlog.close();
-```
-
-启用后，即使常规 Sink 过滤了 DEBUG/TRACE，最近的诊断记录仍可保留在有界内存中。按条数与序列化字节数双重限制，默认不保留 Event payload。`exportFlightRecorder()` 使用排他创建文件，避免覆盖已有记录。**不会在崩溃时自动保存，必须由应用主动导出。**
-
-### Processor 与 Transport 插件
-
-```js
-const rlog = new Rlog({
-  jsonlFilePath: "./logs/events.jsonl",
-  processors: [
-    async record => {
-      if (record.event?.type === "heartbeat") return null; // 过滤
-      record.context = { ...record.context, deployment: "prod" };
-      return record;
-    },
-  ],
-  transports: [{
-    async write(record) { await mySink.write(record); },
-    async flush() { await mySink.flush(); },
-    async close() { await mySink.close(); },
-  }],
-});
-```
-
-Processor 在内置输出之前按顺序执行，支持异步修改与过滤；Transport 是额外输出目标，参与 `flush()` / `close()` 的生命周期。记录经过结构化脱敏后才交给插件；Processor 后续增加的对象字段在写入前会再次脱敏。插件错误不会阻止其他日志记录继续处理，并可通过 `diagnostics()` 统计。
-
-**安全边界：** 插件属于受信任应用代码；`redactKeys` 能保护结构化键值，但不可能自动识别自由字符串里的所有密钥。`capture.stream()` / `capture.binary()` 保存的原始内容也不会自动应用普通日志脱敏规则。
-
-### 诊断 API
-
-```js
-const state = rlog.diagnostics();
-console.log(state.queuedRecords, state.queuedBytes);
-console.log(state.droppedRecords, state.fileErrors);
-console.log(state.recovery.jsonl); // attempts, successes, failures, nextAttemptAt
-console.log(state.processorErrors, state.transportErrors);
-```
-
-更多边界条件与故障处理语义见[可靠性、资源预算与诊断指南](docs/reliability.md)。
-
-**3.1 不包含：** 跨进程共享同一轮转文件的互斥锁、全局时间排序、日志自动压缩/按天过期、默认自动崩溃转储，以及 exactly-once 日志交付协议。
