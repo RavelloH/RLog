@@ -548,6 +548,7 @@ npm pack --dry-run
 
 详细文档：
 
+- [变更日志](CHANGELOG.md)
 - [从 v2 迁移到 v3](docs/migration-v3.md)
 - [Capture 指南](docs/capture.md)
 - [文件轮转](docs/rotation.md)

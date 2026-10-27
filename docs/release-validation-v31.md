@@ -1,7 +1,6 @@
-# RLog 3.1.0 release validation (development branch)
+# RLog 3.1.0 Release Validation
 
-Date: 2026-10-27. Branch: feat/rlog-3.1. This is a local development
-checkpoint, not an npm release and not a claim of CI success.
+Date: 2026-10-27. This report records the release-validation evidence for RLog 3.1.0. The Linux VPS has a restrictive one-CPU/thread environment, so Linux multi-process tests are delegated to GitHub-hosted runners.
 
 ## Build and compatibility
 
@@ -12,8 +11,7 @@ checkpoint, not an npm release and not a claim of CI success.
   Windows, not a published npm version. Creating nested Node child processes
   frequently fails with EAGAIN or a native pthread_create assertion here.
 - Supported Node engines remain >=20. GitHub Actions has been configured for
-  Node 20, 22 and 24 on Ubuntu, Windows and macOS. These CI jobs still require
-  a future push/PR and have not been run for this checkpoint.
+  Node 20, 22 and 24 on Ubuntu, Windows and macOS. The feature commit's GitHub Actions matrix completed successfully: all 9 OS/Node combinations passed. The two CodeQL analysis jobs and result upload also completed successfully.
 
 ## Fault injection and runtime checks
 
@@ -73,7 +71,11 @@ brittle throughput gates on CI.
 5. Review secret redaction behavior for Processor callbacks and arbitrary
    free-text strings, and verify no credentials are included in artifacts.
 
-At the time of writing, the worktree is local and uncommitted.
+## Automated release workflow
+
+The repository uses .github/workflows/publish.yml for tag-triggered npm Trusted Publishing. It targets the npm Trusted Publisher configured for repository RavelloH/RLog, workflow publish.yml, and GitHub environment RLog Publish. Before publishing, the workflow verifies that the tag matches package.json, installs dependencies, runs the test/build suite, and checks package contents. It uses GitHub OIDC and does not require a long-lived npm publish token.
+
+The tag-triggered workflow is the final gate for the release commit; its result is tracked separately in GitHub Actions.
 
 
 ## Short bounded soak (Windows)
