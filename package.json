@@ -1,6 +1,6 @@
 {
   "name": "rlog-js",
-  "version": "3.0.0",
+  "version": "3.1.0",
   "description": "Console-compatible TypeScript logging and stream capture for Node.js CLI tools and automation.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

@@ -1,5 +1,7 @@
+import { randomUUID } from "node:crypto";
+import * as path from "node:path";
 import { normalizeLevel, parseArgvLevel } from "./levels";
-import type { ConfigOptions, CustomColorRule, FileErrorPolicy, FileErrorPolicyConfig, LogLevel, LogMetadata, MetadataOutputMode, RotationOptions, ScreenOutput } from "./types";
+import type { ConfigOptions, CustomColorRule, FileErrorPolicy, FileErrorPolicyConfig, LogLevel, LogMetadata, MetadataOutputMode, RotationOptions, ScreenOutput, FlightRecorderOptions, LogProcessor, LogTransport, AutoRecoverOptions } from "./types";
 
 const defaultRules: CustomColorRule[] = [
   { reg: "false", color: "red" }, { reg: "true", color: "green" },
@@ -31,6 +33,9 @@ export class Config {
   jsonlBaseFields: LogMetadata = {};
   textRotation: RotationOptions | false = false;
   jsonlRotation: RotationOptions | false = false;
+  textFileIsolation: "shared" | "instance" = "shared";
+  jsonlFileIsolation: "shared" | "instance" = "shared";
+  private readonly logInstanceId = randomUUID().replace(/-/g, "");
   context: LogMetadata = {};
   screenMetadataOutput: MetadataOutputMode = "none";
   fileMetadataOutput: MetadataOutputMode = "block";
@@ -43,6 +48,14 @@ export class Config {
   onFileError: ((error: Error, context: import("./types").FileErrorContext) => void) | undefined;
   exitListenerTimeoutMs = 5000;
   exitCloseTimeoutMs = 5000;
+  maxQueuedRecords: number | undefined;
+  maxQueuedBytes: number | undefined;
+  maxRecordBytes: number | undefined;
+  queueOverflowPolicy: "throw" | "drop-debug" = "throw";
+  flightRecorder: FlightRecorderOptions | false = false;
+  processors: LogProcessor[] = [];
+  transports: LogTransport[] = [];
+  autoRecoverFiles: AutoRecoverOptions | false = false;
   private disposed = false;
 
   constructor(options?: ConfigOptions) {
@@ -61,8 +74,32 @@ export class Config {
     if (next.fileErrorPolicy !== undefined) this.validateFileErrorPolicy(next.fileErrorPolicy);
     if (next.textRotation !== undefined) this.validateRotation(next.textRotation, "textRotation");
     if (next.jsonlRotation !== undefined) this.validateRotation(next.jsonlRotation, "jsonlRotation");
+    if (next.textFileIsolation !== undefined && !["shared", "instance"].includes(next.textFileIsolation)) throw new Error("Invalid textFileIsolation");
+    if (next.jsonlFileIsolation !== undefined && !["shared", "instance"].includes(next.jsonlFileIsolation)) throw new Error("Invalid jsonlFileIsolation");
     if (next.exitListenerTimeoutMs !== undefined && (!Number.isFinite(next.exitListenerTimeoutMs) || next.exitListenerTimeoutMs < 0)) throw new Error("exitListenerTimeoutMs must be a non-negative finite number");
     if (next.exitCloseTimeoutMs !== undefined && (!Number.isFinite(next.exitCloseTimeoutMs) || next.exitCloseTimeoutMs < 0)) throw new Error("exitCloseTimeoutMs must be a non-negative finite number");
+    if (next.maxQueuedRecords !== undefined && (!Number.isSafeInteger(next.maxQueuedRecords) || next.maxQueuedRecords < 1)) throw new Error("maxQueuedRecords must be a positive safe integer");
+    if (next.maxQueuedBytes !== undefined && (!Number.isSafeInteger(next.maxQueuedBytes) || next.maxQueuedBytes < 1)) throw new Error("maxQueuedBytes must be a positive safe integer");
+    if (next.maxRecordBytes !== undefined && (!Number.isSafeInteger(next.maxRecordBytes) || next.maxRecordBytes < 1)) throw new Error("maxRecordBytes must be a positive safe integer");
+    if (next.queueOverflowPolicy !== undefined && !["throw", "drop-debug"].includes(next.queueOverflowPolicy)) throw new Error("Invalid queueOverflowPolicy");
+    if (next.processors !== undefined && (!Array.isArray(next.processors) || next.processors.some(fn => typeof fn !== "function"))) throw new Error("Invalid processors");
+    if (next.transports !== undefined && (!Array.isArray(next.transports) || next.transports.some(item => !item || typeof item.write !== "function"))) throw new Error("Invalid transports");
+    if (next.autoRecoverFiles !== undefined && next.autoRecoverFiles !== false) {
+      const recover = next.autoRecoverFiles;
+      if (!recover || typeof recover !== "object" || Array.isArray(recover)) throw new Error("Invalid autoRecoverFiles");
+      if (recover.initialDelayMs !== undefined && (!Number.isSafeInteger(recover.initialDelayMs) || recover.initialDelayMs < 1)) throw new Error("autoRecoverFiles.initialDelayMs must be a positive integer");
+      if (recover.maxDelayMs !== undefined && (!Number.isSafeInteger(recover.maxDelayMs) || recover.maxDelayMs < 1)) throw new Error("autoRecoverFiles.maxDelayMs must be a positive integer");
+      if (recover.multiplier !== undefined && (!Number.isFinite(recover.multiplier) || recover.multiplier < 1)) throw new Error("autoRecoverFiles.multiplier must be at least 1");
+      if ((recover.maxDelayMs ?? 60000) < (recover.initialDelayMs ?? 1000)) throw new Error("autoRecoverFiles.maxDelayMs must not be smaller than initialDelayMs");
+    }
+    if (next.flightRecorder !== undefined && next.flightRecorder !== false) {
+      const fr = next.flightRecorder;
+      if (!fr || typeof fr !== "object" || Array.isArray(fr)) throw new Error("Invalid flightRecorder options");
+      if (fr.maxRecords !== undefined && (!Number.isSafeInteger(fr.maxRecords) || fr.maxRecords < 1)) throw new Error("flightRecorder.maxRecords must be a positive safe integer");
+      if (fr.maxBytes !== undefined && (!Number.isSafeInteger(fr.maxBytes) || fr.maxBytes < 1)) throw new Error("flightRecorder.maxBytes must be a positive safe integer");
+      if (fr.captureLevels !== undefined && (!Array.isArray(fr.captureLevels) || !fr.captureLevels.length || fr.captureLevels.some(level => !["trace","debug","info","success","warn","error","fatal"].includes(level)))) throw new Error("Invalid flightRecorder.captureLevels");
+      if (fr.includeEventData !== undefined && typeof fr.includeEventData !== "boolean") throw new Error("Invalid flightRecorder.includeEventData");
+    }
     if (next.logLevel !== undefined) this.logLevel = normalizeLevel(next.logLevel);
     if (next.screenLogLevel !== undefined) this.screenLogLevel = normalizeLevel(next.screenLogLevel);
     if (next.fileLogLevel !== undefined) this.fileLogLevel = normalizeLevel(next.fileLogLevel);
@@ -74,8 +111,12 @@ export class Config {
     if (next.blockedWordsList !== undefined) this.blockedWordsList = [...next.blockedWordsList];
     if (next.redactKeys !== undefined) this.redactKeys = [...next.redactKeys];
     if (next.customColorRules !== undefined) this.customColorRules = next.customColorRules.map((rule) => ({ ...rule }));
+    if (next.flightRecorder !== undefined) this.flightRecorder = next.flightRecorder === false ? false : { ...next.flightRecorder, ...(next.flightRecorder.captureLevels ? { captureLevels: [...next.flightRecorder.captureLevels] } : {}) };
+    if (next.processors !== undefined) this.processors = [...next.processors];
+    if (next.transports !== undefined) this.transports = [...next.transports];
+    if (next.autoRecoverFiles !== undefined) this.autoRecoverFiles = next.autoRecoverFiles === false ? false : { ...next.autoRecoverFiles };
     for (const [key, value] of Object.entries(next) as Array<[keyof ConfigOptions, ConfigOptions[keyof ConfigOptions]]>) {
-      if (["logLevel", "screenLogLevel", "fileLogLevel", "jsonlLogLevel", "screenOutput", "jsonlOutput", "context", "jsonlBaseFields", "blockedWordsList", "redactKeys", "customColorRules", "fileErrorPolicy"].includes(key)) continue;
+      if (["logLevel", "screenLogLevel", "fileLogLevel", "jsonlLogLevel", "screenOutput", "jsonlOutput", "context", "jsonlBaseFields", "blockedWordsList", "redactKeys", "customColorRules", "fileErrorPolicy", "flightRecorder", "processors", "transports", "autoRecoverFiles"].includes(key)) continue;
       if (value !== undefined) Reflect.set(this, key, key === "textRotation" || key === "jsonlRotation" ? (value === false ? false : { ...(value as RotationOptions) }) : value);
     }
     if (next.fileErrorPolicy !== undefined) this.fileErrorPolicy = typeof next.fileErrorPolicy === "string" ? next.fileErrorPolicy : { ...next.fileErrorPolicy };
@@ -91,6 +132,16 @@ export class Config {
     if (this.disposed) return;
     this.disposed = true;
     Config.instances.delete(this);
+  }
+
+  /** Resolved destination, stable for the lifetime of this logger. */
+  resolveFilePath(target: "text" | "jsonl"): string | undefined {
+    const name = target === "text" ? this.logFilePath : this.jsonlFilePath;
+    if (!name) return undefined;
+    const isolation = target === "text" ? this.textFileIsolation : this.jsonlFileIsolation;
+    if (isolation !== "instance") return name;
+    const parsed = path.parse(name);
+    return path.join(parsed.dir, parsed.name + "." + process.pid + "." + this.logInstanceId + parsed.ext);
   }
 
   effectiveLevel(target: "screen" | "file" | "jsonl"): LogLevel {
@@ -137,6 +188,13 @@ export class Config {
       blockedWordsList: options.blockedWordsList ? [...options.blockedWordsList] : options.blockedWordsList,
       redactKeys: options.redactKeys ? [...options.redactKeys] : options.redactKeys,
       customColorRules: options.customColorRules?.map((rule) => ({ ...rule })),
+      processors: options.processors ? [...options.processors] : undefined,
+      transports: options.transports ? [...options.transports] : undefined,
+      autoRecoverFiles: options.autoRecoverFiles === undefined || options.autoRecoverFiles === false
+        ? options.autoRecoverFiles : { ...options.autoRecoverFiles },
+      flightRecorder: options.flightRecorder === undefined || options.flightRecorder === false
+        ? options.flightRecorder
+        : { ...options.flightRecorder, ...(options.flightRecorder.captureLevels ? { captureLevels: [...options.flightRecorder.captureLevels] } : {}) },
     };
   }
 }

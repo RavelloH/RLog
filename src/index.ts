@@ -1,12 +1,16 @@
 import type { Readable } from "node:stream";
 import type { ChildProcess } from "node:child_process";
+import { AsyncLocalStorage } from "node:async_hooks";
+import { readJsonl, listJsonlFiles } from "./reader";
+export { readJsonl, listJsonlFiles } from "./reader";
+import { performance } from "node:perf_hooks";
 import { CaptureManager, type CaptureLoggerBinding } from "./capture";
 import { Config } from "./config";
 import { Dispatcher } from "./dispatcher";
-import { normalizeLevel } from "./levels";
+import { normalizeLevel, shouldLog } from "./levels";
 import { Toolkit } from "./toolkit";
-import type { BinaryCaptureOptions, BinaryStreamCaptureHandle, ConfigOptions, EventOptions, LogEntry, LogLevelInput, LogMetadata, LogSpan, LogTargets, LogTarget, ProcessCaptureHandle, ProcessCaptureOptions, ProcessCaptureResult, ProgressTask, ProgressTaskOptions, StreamCaptureOptions, TextStreamCaptureHandle, Tostringable } from "./types";
-import { CaptureError, LogEntryAlreadyCommittedError, RLogClosedError, type LogRecord, type RLogExitError } from "./types";
+import type { BinaryCaptureOptions, BinaryStreamCaptureHandle, ConfigOptions, EventOptions, LogEntry, LogLevelInput, LogMetadata, LogSpan, LogTargets, LogTarget, LoggerDiagnostics, FlightRecorderStatus, FlightRecord, ProcessCaptureHandle, ProcessCaptureOptions, ProcessCaptureResult, ProgressTask, ProgressTaskOptions, StreamCaptureOptions, TextStreamCaptureHandle, Tostringable } from "./types";
+import { CaptureError, LogEntryAlreadyCommittedError, RLogClosedError, RLogQueueFullError, RLogQueueBytesExceededError, RLogRecordTooLargeError, type LogRecord, type RLogExitError } from "./types";
 
 export * from "./types";
 
@@ -54,20 +58,29 @@ export class TargetLogger {
     return this.logger.withSpanForTargets(this.targets, name, dataOrOperation, possibleOperation);
   }
   progressTask(options: ProgressTaskOptions): ProgressTask { return this.logger.progressTaskForTargets(this.targets, options); }
+  isEnabled(level: LogLevelInput): boolean { return this.logger.isEnabled(level, this.targets); }
+  logLazy(level: LogLevelInput, argumentsFactory: () => readonly unknown[]): LogEntry | undefined {
+    if (!this.isEnabled(level)) return undefined;
+    return this.logger.writeToTargets(level, argumentsFactory(), this.targets, undefined, this.timestamp, this.hasTimestamp);
+  }
+  debugLazy(argumentsFactory: () => readonly unknown[]): LogEntry | undefined {
+    return this.logLazy("debug", argumentsFactory);
+  }
 }
 
 class LogSpanImpl implements LogSpan {
   readonly startedAt = new Date();
+  private readonly startClock = performance.now();
   private finished = false;
   constructor(readonly name: string, private readonly target: TargetLogger, private readonly data: LogMetadata) {}
   info(...args: unknown[]): LogEntry { return this.target.info(...args); }
   event(type: string, data?: LogMetadata, options?: EventOptions): LogEntry { return this.target.event(type, data, options); }
-  success(data?: LogMetadata): void { if (!this.finished) { this.finished = true; this.target.event("span.completed", { ...this.data, ...(data ?? {}), durationMs: Date.now() - this.startedAt.valueOf() }); } }
+  success(data?: LogMetadata): void { if (!this.finished) { this.finished = true; this.target.event("span.completed", { ...this.data, ...(data ?? {}), durationMs: performance.now() - this.startClock }); } }
   fail(error: unknown, data?: LogMetadata): void {
     if (this.finished) return;
     this.finished = true;
     const rendered = error instanceof Error ? { name: error.name, message: error.message } : String(error);
-    this.target.event("span.failed", { ...this.data, ...(data ?? {}), durationMs: Date.now() - this.startedAt.valueOf(), error: rendered }, { level: "error" });
+    this.target.event("span.failed", { ...this.data, ...(data ?? {}), durationMs: performance.now() - this.startClock, error: rendered }, { level: "error" });
   }
 }
 
@@ -156,14 +169,15 @@ export default class Rlog {
   private readonly root: Rlog;
   private readonly context: LogMetadata;
   private readonly exitListeners: ExitListener[];
+  private readonly asyncContext: AsyncLocalStorage<LogMetadata>;
   private readonly captureManager: CaptureManager;
   private exiting = false;
 
   constructor(options?: ConfigOptions, internals?: { root: Rlog; context: LogMetadata }) {
     if (internals) {
-      this.root = internals.root; this.config = this.root.config; this.dispatcher = this.root.dispatcher; this.toolkit = this.root.toolkit; this.context = internals.context; this.exitListeners = this.root.exitListeners; this.captureManager = this.root.captureManager;
+      this.root = internals.root; this.config = this.root.config; this.dispatcher = this.root.dispatcher; this.toolkit = this.root.toolkit; this.context = internals.context; this.exitListeners = this.root.exitListeners; this.captureManager = this.root.captureManager; this.asyncContext = this.root.asyncContext;
     } else {
-      this.root = this; this.config = new Config(options); this.dispatcher = new Dispatcher(this.config); this.toolkit = this.dispatcher.toolkit; this.context = { ...this.config.context }; this.exitListeners = [];
+      this.root = this; this.config = new Config(options); this.dispatcher = new Dispatcher(this.config); this.toolkit = this.dispatcher.toolkit; this.context = { ...this.config.context }; this.exitListeners = []; this.asyncContext = new AsyncLocalStorage<LogMetadata>();
       this.captureManager = new CaptureManager(this.dispatcher);
       if (this.config.autoInit && this.config.logFilePath) {
         void this.initText().catch(() => undefined);
@@ -206,6 +220,43 @@ export default class Rlog {
   at(timestamp: Tostringable): TargetLogger { return new TargetLogger(this, "all", timestamp, true); }
 
   child(context: LogMetadata): Rlog { return new Rlog(undefined, { root: this.root, context: { ...this.currentContext(), ...context } }); }
+  /** Run a synchronous or asynchronous operation with automatically propagated per-request metadata. */
+  withContext<T>(context: LogMetadata, operation: () => T): T {
+    const inherited = this.root.asyncContext.getStore() ?? {};
+    return this.root.asyncContext.run({ ...inherited, ...context }, operation);
+  }
+  /** Check whether any enabled destination would accept the level. */
+  isEnabled(level: LogLevelInput, targets: LogTargets = "all"): boolean {
+    const normalized = normalizeLevel(level);
+    if (normalized === "off") return false;
+    const has = (target: LogTarget) => targets === "all" || targets.has(target);
+    if (this.root.dispatcher.flightRecorderEnabled(normalized)) return true;
+    if (this.config.transports.length) return true;
+    return (has("screen") && this.config.screenOutput !== "none" && shouldLog(normalized, this.config.effectiveLevel("screen"))) ||
+      (has("text") && Boolean(this.config.logFilePath) && shouldLog(normalized, this.config.effectiveLevel("file"))) ||
+      (has("jsonl") && (Boolean(this.config.jsonlFilePath) || this.config.jsonlOutput !== "none") && shouldLog(normalized, this.config.effectiveLevel("jsonl")));
+  }
+  /** Avoid computing expensive log arguments when all destinations filter out the level. */
+  logLazy(level: LogLevelInput, argumentsFactory: () => readonly unknown[]): LogEntry | undefined {
+    if (!this.isEnabled(level)) return undefined;
+    return this.writeToTargets(level, argumentsFactory(), "all");
+  }
+  debugLazy(argumentsFactory: () => readonly unknown[]): LogEntry | undefined {
+    return this.logLazy("debug", argumentsFactory);
+  }
+  diagnostics(): LoggerDiagnostics { return this.root.dispatcher.diagnostics(); }
+  flightRecorderStatus(): FlightRecorderStatus { return this.root.dispatcher.flightRecorderStatus(); }
+  flightRecorderSnapshot(): FlightRecord[] { return this.root.dispatcher.flightRecorderSnapshot(); }
+  clearFlightRecorder(): void { this.root.dispatcher.clearFlightRecorder(); }
+  /** Export a private JSONL snapshot to a NEW file; never overwrites existing files. */
+  exportFlightRecorder(filePath: string): Promise<number> { return this.root.dispatcher.exportFlightRecorder(filePath); }
+  filePaths(): { text: string | undefined; jsonl: string | undefined } {
+    return { text: this.config.resolveFilePath("text"), jsonl: this.config.resolveFilePath("jsonl") };
+  }
+  recoverFiles(): Promise<{ text: boolean | null; jsonl: boolean | null }> {
+    return this.root.dispatcher.recoverFiles();
+  }
+  syncFiles(): Promise<void> { return this.root.dispatcher.syncFiles(); }
   onExit(listener: ExitListener): void { this.root.exitListeners.push(listener); }
   async flush(): Promise<void> { return this.root.dispatcher.flush(); }
   async close(): Promise<void> {
@@ -230,7 +281,7 @@ export default class Rlog {
     this.root.dispatcher.assertOpen();
     const normalized = normalizeLevel(level);
     if (normalized === "off") throw new Error("Cannot log with level off");
-    const record: LogRecord = { id: this.root.dispatcher.nextId(), timestamp: hasTimestamp ? timestamp : new Date(), level: specialLabel ? "fatal" : normalized, args: [...args], message: this.toolkit.formatConsoleArgs(args), metadata: {}, context: this.currentContext(), targets, committed: false, displayLabel: specialLabel };
+    const record: LogRecord = { id: this.root.dispatcher.nextId(), timestamp: hasTimestamp ? timestamp : new Date(), level: specialLabel ? "fatal" : normalized, args: [...(this.config.redactKeys.length ? this.toolkit.redact(args) as unknown[] : args)], message: this.toolkit.formatConsoleArgs(this.config.redactKeys.length ? this.toolkit.redact(args) as unknown[] : args), metadata: {}, context: this.currentContext(), targets, committed: false, displayLabel: specialLabel };
     this.root.dispatcher.enqueue(record);
     return new LogEntryImpl(record);
   }
@@ -240,20 +291,20 @@ export default class Rlog {
     const normalized = normalizeLevel(level);
     if (normalized === "off") return;
     const record: LogRecord = {
-      id: this.root.dispatcher.nextId(), timestamp: new Date(), level: normalized, args: [...args],
-      message: this.toolkit.formatConsoleArgs(args), metadata: {}, context: this.currentContext(), targets,
+      id: this.root.dispatcher.nextId(), timestamp: new Date(), level: normalized, args: [...(this.config.redactKeys.length ? this.toolkit.redact(args) as unknown[] : args)],
+      message: this.toolkit.formatConsoleArgs(this.config.redactKeys.length ? this.toolkit.redact(args) as unknown[] : args), metadata: {}, context: this.currentContext(), targets,
       committed: false,
     };
     this.root.dispatcher.enqueueCapture(record);
   }
 
-  async writeRawText(text: string): Promise<void> { this.root.dispatcher.assertOpen(); if (this.config.logFilePath) await this.root.dispatcher.text.file.write(this.config.logFilePath, text); }
+  async writeRawText(text: string): Promise<void> { this.root.dispatcher.assertOpen(); if (this.config.logFilePath) await this.root.dispatcher.text.file.write(this.config.resolveFilePath("text")!, text); }
   /** @deprecated Use `writeRawText` through `rlog.text.writeRaw`. */
   async writeRawFile(text: string): Promise<void> { return this.writeRawText(text); }
   get textLogStream() { return this.root.dispatcher.text.file.stream; }
   async initText(): Promise<void> {
     if (!this.config.logFilePath) return;
-    try { await this.root.dispatcher.text.file.init(this.config.logFilePath); }
+    try { await this.root.dispatcher.text.file.init(this.config.resolveFilePath("text")!); }
     catch (reason) {
       // ManagedFile has already reported the failure. Throw-policy callers can
       // observe it immediately; tolerant policies retain the disabled target.
@@ -263,7 +314,10 @@ export default class Rlog {
   /** @deprecated Use `initText` through `rlog.text.init`. */
   async initFile(): Promise<void> { return this.initText(); }
 
-  private currentContext(): LogMetadata { return this === this.root ? { ...this.config.context } : { ...this.context }; }
+  private currentContext(): LogMetadata {
+    const scoped = this.root.asyncContext.getStore() ?? {};
+    return this === this.root ? { ...this.config.context, ...scoped } : { ...this.context, ...scoped };
+  }
   withSpanForTargets<T>(targets: LogTargets, name: string, dataOrOperation: LogMetadata | ((span: LogSpan) => Promise<T> | T), possibleOperation?: (span: LogSpan) => Promise<T> | T): Promise<T> {
     const data = typeof dataOrOperation === "function" ? {} : dataOrOperation;
     const operation = typeof dataOrOperation === "function" ? dataOrOperation : possibleOperation;
@@ -317,4 +371,9 @@ module.exports.ScreenTargetLogger = ScreenTargetLogger;
 module.exports.TextTargetLogger = TextTargetLogger;
 module.exports.CaptureError = CaptureError;
 module.exports.RLogClosedError = RLogClosedError;
+module.exports.RLogQueueFullError = RLogQueueFullError;
+module.exports.RLogQueueBytesExceededError = RLogQueueBytesExceededError;
+module.exports.RLogRecordTooLargeError = RLogRecordTooLargeError;
+module.exports.readJsonl = readJsonl;
+module.exports.listJsonlFiles = listJsonlFiles;
 module.exports.LogEntryAlreadyCommittedError = LogEntryAlreadyCommittedError;

@@ -12,10 +12,13 @@ RLog 是面向 Node.js CLI、自动化流程、构建工具和硬件工具的 Ty
 - `flush()`、幂等 `close()`、有序 `exit()` 生命周期
 - `blockedWordsList` 文本遮蔽与 `redactKeys` 结构化字段脱敏
 - 文本和 JSONL 的按大小轮转
+- **3.1**：异步上下文、延迟日志、有界队列与字节预算
+- **3.1**：文件隔离、文件同步与自动恢复、跨轮转 JSONL 查询
+- **3.1**：Flight Recorder、Processor / Transport 扩展和内部诊断
 
 ## 安装
 
-RLog v3 需要 Node.js 20 或更高版本。
+RLog v3 需要 Node.js 20 或更高版本。以下 3.1 API 需使用 **rlog-js 3.1.0 或更新版本**。
 
 ```bash
 npm install rlog-js
@@ -548,3 +551,166 @@ npm pack --dry-run
 - [从 v2 迁移到 v3](docs/migration-v3.md)
 - [Capture 指南](docs/capture.md)
 - [文件轮转](docs/rotation.md)
+- [3.1 可靠性与诊断详细指南](docs/reliability-v31.md)
+- [3.1 发布验证记录](docs/release-validation-v31.md)
+
+
+
+## RLog 3.1.0：可靠性、诊断与扩展
+
+3.1 延续 3.0 的 Screen、Text、JSONL、Capture 和 Logger API，在此基础上增加了长期运行服务和 Agent 所需的资源保护、故障恢复与诊断功能。**大部分增强为可选配置，未启用时保留 v3 原有的队列及文件命名行为。**
+
+| 类别 | 新 API / 配置 | 作用 |
+| --- | --- | --- |
+| 异步上下文 | `withContext()` | 通过 AsyncLocalStorage 自动关联请求、设备和操作 |
+| 延迟日志 | `isEnabled()`、`logLazy()`、`debugLazy()` | 过滤等级后再生成昂贵参数 |
+| 资源预算 | `maxQueuedRecords`、`maxQueuedBytes`、`maxRecordBytes` | 限制待写记录数量及估算大小 |
+| 过载处理 | `queueOverflowPolicy` | 明确抛错，或按配置丢弃 TRACE/DEBUG |
+| 文件隔离 | `textFileIsolation`、`jsonlFileIsolation` | 每个 Logger 实例独立保存及轮转 |
+| 文件可靠性 | `recoverFiles()`、`autoRecoverFiles`、`syncFiles()` | 主动/退避恢复与 OS 级 fsync |
+| 日志读取 | `listJsonlFiles()`、`readJsonl()` | 查询当前、轮转及实例隔离文件 |
+| 故障现场 | `flightRecorder` | 有界内存环形日志，按需导出 |
+| 自定义流水线 | `processors`、`transports` | 异步过滤、转换与额外输出 |
+| 可观测性 | `diagnostics()`、`flightRecorderStatus()` | 记录积压、错误、恢复和淘汰数量 |
+
+### 自动异步上下文与延迟日志
+
+`withContext()` 在并行请求之间隔离上下文，并支持跨 `await` 继承；与既有 `child()` 可以组合使用：
+
+```js
+const rlog = new Rlog({
+  jsonlFilePath: "./logs/events.jsonl",
+  jsonlLogLevel: "info",
+});
+
+await rlog.withContext({ requestId: "req-42", deviceId: "board-1" }, async () => {
+  await connectDevice();
+  rlog.jsonl.event("device.connected", { connected: true });
+  rlog.debugLazy(() => ["expensive snapshot", collectDebugState()]);
+});
+await rlog.close();
+```
+
+`logLazy(level, argumentsFactory)` 以及目标限定的 `rlog.jsonl.debugLazy()` 只在目标需要时执行工厂函数。工厂函数需要**返回一个参数数组**，而不是已经格式化的字符串。
+
+### 队列限制与过载保护
+
+```js
+const rlog = new Rlog({
+  jsonlFilePath: "./logs/events.jsonl",
+  maxQueuedRecords: 4096,
+  maxQueuedBytes: 2 * 1024 * 1024,
+  maxRecordBytes: 16 * 1024,
+  queueOverflowPolicy: "drop-debug", // 默认 "throw"
+});
+```
+
+`maxQueuedRecords` 限制已接受、尚未完全派发的记录数；`maxQueuedBytes` 和 `maxRecordBytes` 限制其**序列化估算大小**，并非严格限制进程 RSS。若单条日志在 `.meta()`、Event 或 Processor 阶段被扩充，写入前会重新检查。
+
+`drop-debug` 是显式选项：只允许超限的 TRACE/DEBUG 日志被计数丢弃。INFO 及更严重日志不能被这种策略静默丢弃，而会抛出 `RLogQueueFullError`、`RLogQueueBytesExceededError` 或 `RLogRecordTooLargeError`。部分延迟附加数据引起的错误会在 `flush()` / `close()` 时交付。**不配置上限时保留 v3 原有普通日志队列行为。**
+
+### 多进程安全隔离、文件恢复与同步
+
+```js
+const rlog = new Rlog({
+  jsonlFilePath: "./logs/events.jsonl",
+  jsonlFileIsolation: "instance",
+  jsonlRotation: { maxBytes: 2 * 1024 * 1024, maxFiles: 3 },
+  fileErrorPolicy: "disable",
+  autoRecoverFiles: {
+    initialDelayMs: 1000,
+    maxDelayMs: 60000,
+    multiplier: 2,
+  },
+});
+
+rlog.jsonl.event("worker.started", { pid: process.pid });
+console.log(rlog.filePaths().jsonl); // PID + 唯一 Logger 实例标识
+await rlog.syncFiles();              // 等待写入，并请求 OS fsync
+console.log(rlog.diagnostics().recovery.jsonl);
+await rlog.close();
+```
+
+文本文件也支持 `textFileIsolation: "instance"`；默认 `"shared"` 保持此前的文件路径。隔离模式为每个实例创建**不同的文件与轮转序列**，避免跨进程轮转竞争，**并不提供对同一个文件的跨进程锁**。每个实例有各自的保留配额，历史实例文件仍需应用清理。
+
+文件 Sink 失效后可调用 `recoverFiles()` 主动恢复；启用 `autoRecoverFiles` 时，会在下一条新日志到来且退避冷却期结束后尝试恢复。无需轮询定时器，失败期间结果不确定的记录**不会自动重放**。`syncFiles()` 向操作系统请求 `fsync`，但不能保证所有硬件故障下绝对不丢数据。
+
+### 跨轮转文件的流式 JSONL 查询
+
+```js
+const { listJsonlFiles, readJsonl } = require("rlog-js");
+
+const paths = await listJsonlFiles("./logs/events.jsonl");
+
+for await (const item of readJsonl({
+  filePath: "./logs/events.jsonl",
+  levels: ["warn", "error", "fatal"],
+  eventTypes: ["worker.failed"],
+  since: new Date(Date.now() - 24 * 60 * 60 * 1000),
+  limit: 100,
+})) {
+  console.log(item.filePath, item.lineNumber, item.record);
+}
+```
+
+读取器可识别当前文件、历史轮转文件及实例隔离文件，支持筛选级别、事件类型和时间下限。解析坏行默认抛出包含文件与行号的异常，可选 `skipMalformed: true` 跳过。不同实例之间**不保证全局时间顺序**，并发轮转时也不保证快照隔离。
+
+### Flight Recorder：故障前的诊断上下文
+
+```js
+const rlog = new Rlog({
+  screenOutput: "none",
+  flightRecorder: {
+    maxRecords: 200,
+    maxBytes: 256 * 1024,
+    captureLevels: ["trace", "debug"], // 默认
+    // includeEventData: false,       // 默认不保留事件 payload
+  },
+});
+rlog.debug("connecting websocket");
+console.log(rlog.flightRecorderStatus());
+const recent = rlog.flightRecorderSnapshot();
+await rlog.exportFlightRecorder("./logs/incident-1.jsonl");
+rlog.clearFlightRecorder();
+await rlog.close();
+```
+
+启用后，即使常规 Sink 过滤了 DEBUG/TRACE，最近的诊断记录仍可保留在有界内存中。按条数与序列化字节数双重限制，默认不保留 Event payload。`exportFlightRecorder()` 使用排他创建文件，避免覆盖已有记录。**不会在崩溃时自动保存，必须由应用主动导出。**
+
+### Processor 与 Transport 插件
+
+```js
+const rlog = new Rlog({
+  jsonlFilePath: "./logs/events.jsonl",
+  processors: [
+    async record => {
+      if (record.event?.type === "heartbeat") return null; // 过滤
+      record.context = { ...record.context, deployment: "prod" };
+      return record;
+    },
+  ],
+  transports: [{
+    async write(record) { await mySink.write(record); },
+    async flush() { await mySink.flush(); },
+    async close() { await mySink.close(); },
+  }],
+});
+```
+
+Processor 在内置输出之前按顺序执行，支持异步修改与过滤；Transport 是额外输出目标，参与 `flush()` / `close()` 的生命周期。记录经过结构化脱敏后才交给插件；Processor 后续增加的对象字段在写入前会再次脱敏。插件错误不会阻止其他日志记录继续处理，并可通过 `diagnostics()` 统计。
+
+**安全边界：** 插件属于受信任应用代码；`redactKeys` 能保护结构化键值，但不可能自动识别自由字符串里的所有密钥。`capture.stream()` / `capture.binary()` 保存的原始内容也不会自动应用普通日志脱敏规则。
+
+### 诊断 API 与发布验证
+
+```js
+const state = rlog.diagnostics();
+console.log(state.queuedRecords, state.queuedBytes);
+console.log(state.droppedRecords, state.fileErrors);
+console.log(state.recovery.jsonl); // attempts, successes, failures, nextAttemptAt
+console.log(state.processorErrors, state.transportErrors);
+```
+
+详细说明与限制见 [3.1 可靠性指南](docs/reliability-v31.md)，跨平台故障注入及性能基准见 [3.1 发布验证记录](docs/release-validation-v31.md)。
+
+**3.1 不包含：** 跨进程共享同一轮转文件的互斥锁、全局时间排序、日志自动压缩/按天过期、默认自动崩溃转储，以及 exactly-once 日志交付协议。

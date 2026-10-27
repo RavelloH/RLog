@@ -46,7 +46,7 @@ export type LogColor = "red" | "green" | "yellow" | "blue" | "magenta" | "cyan" 
 export interface FileErrorContext {
   filePath?: string;
   output: "text" | "jsonl" | "capture";
-  operation: "open" | "write" | "flush" | "close" | "rotate";
+  operation: "open" | "write" | "flush" | "sync" | "close" | "rotate";
 }
 
 export interface ConfigOptions {
@@ -74,6 +74,9 @@ export interface ConfigOptions {
   textRotation?: RotationOptions | false;
   /** Size-based rotation for the JSONL log. Disabled by default. */
   jsonlRotation?: RotationOptions | false;
+  /** Default: "shared" (v3 behavior). "instance" uses a distinct name per logger instance and process. */
+  textFileIsolation?: "shared" | "instance";
+  jsonlFileIsolation?: "shared" | "instance";
   context?: LogMetadata;
   screenMetadataOutput?: MetadataOutputMode;
   fileMetadataOutput?: MetadataOutputMode;
@@ -86,6 +89,119 @@ export interface ConfigOptions {
   onFileError?: (error: Error, context: FileErrorContext) => void;
   exitListenerTimeoutMs?: number;
   exitCloseTimeoutMs?: number;
+  /** Optional hard ceiling for accepted, not-yet-dispatched records. Unlimited by default for v3 compatibility. */
+  maxQueuedRecords?: number;
+  /** Optional approximate JSON-serialized byte budget for all accepted pending records. */
+  maxQueuedBytes?: number;
+  /** Optional per-record limit, including late event and metadata additions. */
+  maxRecordBytes?: number;
+  /** When full, optionally discard only trace/debug events. Other levels still fail explicitly. */
+  queueOverflowPolicy?: "throw" | "drop-debug";
+  /** Opt-in bounded diagnostic ring buffer; does not write automatically. */
+  flightRecorder?: FlightRecorderOptions | false;
+  /** Opt-in processors receive sanitized records. Executed sequentially, before all sinks. */
+  processors?: LogProcessor[];
+  /** Additional caller-owned transports; errors are reported on flush/close. */
+  transports?: LogTransport[];
+  /** Opt-in opportunistic file reopening, with no timers and no replay. */
+  autoRecoverFiles?: AutoRecoverOptions | false;
+}
+
+export interface FlightRecorderOptions {
+  /** Default 200 entries. */
+  maxRecords?: number;
+  /** Default 256 KiB of serialized JSONL. */
+  maxBytes?: number;
+  /** Default trace/debug. Other levels may be explicitly selected. */
+  captureLevels?: Array<Exclude<LogLevel, "off">>;
+  /** Event payloads are omitted by default to minimize captured secrets. */
+  includeEventData?: boolean;
+}
+
+export interface FlightRecorderStatus {
+  enabled: boolean;
+  records: number;
+  bytes: number;
+  evictedRecords: number;
+  oversizedRecords: number;
+  captureErrors: number;
+}
+
+export interface FlightRecord {
+  id: number;
+  timestamp: string | number;
+  level: Exclude<LogLevel, "off">;
+  message: string;
+  context: LogMetadata;
+  meta: LogMetadata;
+  event?: { type: string; data?: LogMetadata };
+}
+
+export interface LoggerDiagnostics {
+  queuedRecords: number;
+  queuedBytes: number;
+  maxQueuedBytes: number | null;
+  maxRecordBytes: number | null;
+  maxQueuedRecords: number | null;
+  droppedRecords: number;
+  sinkActive: { text: boolean; jsonl: boolean };
+  fileErrors: number;
+  lastFileError?: { output: FileErrorContext["output"]; operation: FileErrorContext["operation"]; message: string; timestamp: string };
+  deferredErrors: number;
+  processorDropped: number;
+  processorErrors: number;
+  transportErrors: number;
+  recovery: { text: FileRecoveryStatus; jsonl: FileRecoveryStatus };
+}
+
+export class RLogQueueFullError extends Error {
+  constructor(readonly limit: number) {
+    super("RLog queue is full (maxQueuedRecords=" + limit + ")");
+    this.name = "RLogQueueFullError";
+  }
+}
+
+export class RLogQueueBytesExceededError extends Error {
+  constructor(readonly limit: number, readonly actual: number) {
+    super("RLog queued byte limit exceeded (maxQueuedBytes=" + limit + ", actual=" + actual + ")");
+    this.name = "RLogQueueBytesExceededError";
+  }
+}
+
+export class RLogRecordTooLargeError extends Error {
+  constructor(readonly limit: number, readonly actual: number) {
+    super("RLog record exceeds maxRecordBytes=" + limit + " (actual=" + actual + ")");
+    this.name = "RLogRecordTooLargeError";
+  }
+}
+
+/** Opt-in record pipeline: return null to intentionally drop a record. */
+export type LogProcessor = (record: LogRecord) => LogRecord | null | void | Promise<LogRecord | null | void>;
+/** A caller-owned additional destination. Writes are serialized in the dispatcher. */
+export interface LogTransport {
+  write(record: Readonly<LogRecord>): void | Promise<void>;
+  flush?(): void | Promise<void>;
+  close?(): void | Promise<void>;
+}
+
+export interface AutoRecoverOptions {
+  /** Default 1000 ms. */
+  initialDelayMs?: number;
+  /** Default 60000 ms. */
+  maxDelayMs?: number;
+  /** Default 2. */
+  multiplier?: number;
+}
+
+export interface FileRecoveryStatus {
+  disabled: boolean;
+  attempts: number;
+  successes: number;
+  failures: number;
+  /** Next permitted opportunistic retry, or null if none is scheduled. */
+  nextAttemptAt: string | null;
+  /** Entries skipped while the destination is disabled and retry is not yet due. */
+  skippedRecords: number;
 }
 
 export interface LogRecord {
@@ -100,6 +216,8 @@ export interface LogRecord {
   event?: { type: string; data?: LogMetadata };
   committed: boolean;
   screenWritten?: boolean;
+  /** Internal marker: processor-modified message is authoritative for Screen rendering. */
+  processed?: boolean;
   displayLabel?: string;
 }
 

@@ -3,7 +3,7 @@ import * as path from "node:path";
 import type { Writable } from "node:stream";
 import { labelFor, shouldLog } from "./levels";
 import type { Config } from "./config";
-import type { CaptureFileMode, FileErrorContext, LogColor, LogRecord, LogTarget, RotationOptions } from "./types";
+import type { CaptureFileMode, FileErrorContext, LogColor, LogRecord, LogTarget, RotationOptions, AutoRecoverOptions, FileRecoveryStatus } from "./types";
 import { Toolkit } from "./toolkit";
 
 export type ErrorReporter = (error: Error, context: FileErrorContext) => void;
@@ -80,12 +80,43 @@ export class ManagedFile {
   private openedPath: string | undefined;
   private openedMode: CaptureFileMode = "append";
   private currentBytes = 0;
+  private retryAt = 0;
+  private consecutiveFailures = 0;
+  private recoveryAttempts = 0;
+  private recoverySuccesses = 0;
+  private recoveryFailures = 0;
+  private skippedRecords = 0;
   private readonly reportedErrors = new WeakSet<Error>();
   private activeOperation: FileErrorContext["operation"] | undefined;
   /** Always resolves, so a failed operation never blocks the remaining queue. */
   private operations: Promise<void> = Promise.resolve();
 
-  constructor(private readonly output: FileErrorContext["output"], private readonly report: ErrorReporter, private readonly getRotation: () => RotationOptions | false = () => false) {}
+  constructor(
+    private readonly output: FileErrorContext["output"],
+    private readonly report: ErrorReporter,
+    private readonly getRotation: () => RotationOptions | false = () => false,
+    private readonly getAutoRecovery: () => AutoRecoverOptions | false = () => false,
+  ) {}
+
+  recoveryStatus(): FileRecoveryStatus {
+    return {
+      disabled: this.disabled, attempts: this.recoveryAttempts,
+      successes: this.recoverySuccesses, failures: this.recoveryFailures,
+      nextAttemptAt: this.disabled && this.getAutoRecovery() && this.retryAt ? new Date(this.retryAt).toISOString() : null,
+      skippedRecords: this.skippedRecords,
+    };
+  }
+  private scheduleRecovery(): void {
+    const options = this.getAutoRecovery();
+    if (!options || this.retryAt) return;
+    this.consecutiveFailures++;
+    const initial = options.initialDelayMs ?? 1000;
+    const max = options.maxDelayMs ?? 60000;
+    const multiplier = options.multiplier ?? 2;
+    const delay = Math.min(max, initial * Math.pow(multiplier, this.consecutiveFailures - 1));
+    this.retryAt = Date.now() + delay;
+  }
+
 
   get active(): boolean { return !this.disabled; }
   /**
@@ -98,6 +129,52 @@ export class ManagedFile {
   write(filePath: string, value: string | Buffer, mode: CaptureFileMode = "append"): Promise<void> { return this.enqueue(() => this.doWrite(filePath, value, mode)); }
   flush(): Promise<void> { return this.enqueue(() => this.doFlush()); }
   close(): Promise<void> { return this.enqueue(() => this.doClose()); }
+  /** Explicitly retry a failed file destination; never replay earlier records. */
+  recover(filePath: string): Promise<boolean> { return this.enqueue(() => this.recoverNow(filePath)); }
+
+  private async recoverNow(filePath: string): Promise<boolean> {
+    if (!this.disabled) return true;
+    this.recoveryAttempts++;
+    this.retryAt = 0;
+    try {
+      await this.closeCurrent();
+      this.disabled = false;
+      const stat = await fs.promises.stat(filePath).catch((reason: unknown) => {
+        if ((reason as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+        throw reason;
+      });
+      if (stat && !stat.isFile()) throw Object.assign(new Error("RLog target is not a regular file"), { code: "EINVAL" });
+      await this.doOpen(filePath, "append");
+      this.consecutiveFailures = 0;
+      this.recoverySuccesses++;
+      return true;
+    } catch (reason) {
+      this.disabled = true;
+      this.recoveryFailures++;
+      this.scheduleRecovery();
+      // Validation and close failures must also appear in file diagnostics.
+      this.reportOnce(toError(reason), { filePath, output: this.output, operation: "open" });
+      return false;
+    }
+  }
+  /** Wait for previous writes then request an OS-level file sync. */
+  sync(): Promise<void> {
+    return this.enqueue(async () => {
+      if (this.disabled) throw new Error("RLog file sink is disabled");
+      if (!this.writeStream) return;
+      await this.doFlush();
+      const fd = (this.writeStream as fs.WriteStream & { fd?: number }).fd;
+      if (typeof fd !== "number") return;
+      try {
+        await new Promise<void>((resolve, reject) => fs.fsync(fd, error => error ? reject(error) : resolve()));
+      } catch (reason) {
+        const error = toError(reason);
+        this.disabled = true;
+        this.reportOnce(error, { filePath: this.openedPath, output: this.output, operation: "sync" });
+        throw error;
+      }
+    });
+  }
 
   private enqueue<T>(operation: () => Promise<T>): Promise<T> {
     const result = this.operations.then(operation, operation);
@@ -108,7 +185,13 @@ export class ManagedFile {
   private async doInit(filePath: string, mode: CaptureFileMode): Promise<void> { if (!this.disabled) await this.open(filePath, mode); }
 
   private async doWrite(filePath: string, value: string | Buffer, mode: CaptureFileMode): Promise<void> {
-    if (this.disabled) return;
+    if (this.disabled) {
+      const recovery = this.getAutoRecovery();
+      if (!recovery || mode !== "append" || (this.retryAt && Date.now() < this.retryAt) || !(await this.recoverNow(filePath))) {
+        this.skippedRecords++;
+        return;
+      }
+    }
     try {
       await this.open(filePath, mode);
       const bytes = Buffer.isBuffer(value) ? value.length : Buffer.byteLength(value);
@@ -227,7 +310,10 @@ export class ManagedFile {
     });
   }
 
-  private reportOnce(error: Error, context: FileErrorContext): void { if (!this.reportedErrors.has(error)) { this.reportedErrors.add(error); this.report(error, context); } }
+  private reportOnce(error: Error, context: FileErrorContext): void {
+    if (this.disabled) this.scheduleRecovery();
+    if (!this.reportedErrors.has(error)) { this.reportedErrors.add(error); this.report(error, context); }
+  }
 }
 
 function targetsRecord(record: LogRecord, target: LogTarget): boolean { return record.targets === "all" || record.targets.has(target); }
@@ -271,7 +357,7 @@ export class ConsoleSink implements LogSink {
   }
   private resolveTarget(): Writable | undefined { return this.config.screenOutput === "none" ? undefined : this.config.screenOutput === "stdout" ? process.stdout : this.config.screenOutput === "stderr" ? process.stderr : this.config.screenOutput; }
   private renderMessage(record: LogRecord): string {
-    const text = this.toolkit.formatConsoleArgs(record.args, this.config.enableColorfulOutput);
+    const text = record.processed ? record.message : this.toolkit.formatConsoleArgs(record.args, this.config.enableColorfulOutput);
     const metadata = { ...record.context, ...(record.event?.data ?? {}), ...record.metadata };
     if (!Object.keys(metadata).length || this.config.screenMetadataOutput === "none") return text;
     const redacted = this.toolkit.redact(metadata) as Record<string, unknown>; const rendered = this.toolkit.safeInspect(redacted);
@@ -282,13 +368,13 @@ export class ConsoleSink implements LogSink {
 export class TextFileSink implements LogSink {
   readonly target = "text" as const;
   readonly file: ManagedFile;
-  constructor(private readonly config: Config, private readonly toolkit: Toolkit, report: ErrorReporter) { this.file = new ManagedFile("text", report, () => config.textRotation); }
+  constructor(private readonly config: Config, private readonly toolkit: Toolkit, report: ErrorReporter) { this.file = new ManagedFile("text", report, () => config.textRotation, () => config.autoRecoverFiles); }
   async write(record: LogRecord): Promise<void> {
     if (!this.config.logFilePath || !targetsRecord(record, this.target) || !shouldLog(record.level, this.config.effectiveLevel("file"))) return;
     const label = record.displayLabel ?? labelFor(record.level, "file"); const metadata = { ...record.context, ...(record.event?.data ?? {}), ...record.metadata };
     const redacted = this.toolkit.redact(metadata) as Record<string, unknown>; let body = this.toolkit.encryptPrivacyContent(record.message);
     if (Object.keys(metadata).length && this.config.fileMetadataOutput !== "none") body += this.config.fileMetadataOutput === "inline" ? ` ${this.toolkit.safeInspect(redacted)}` : `\n${Object.entries(redacted).map(([key, value]) => `  ${key}: ${this.toolkit.safeInspect(value)}`).join("\n")}`;
-    await this.file.write(this.config.logFilePath, `${this.toolkit.formatLogMessage(label, body, record.timestamp)}\n`);
+    await this.file.write(this.config.resolveFilePath("text")!, `${this.toolkit.formatLogMessage(label, body, record.timestamp)}\n`);
   }
   flush(): Promise<void> { return this.file.flush(); }
   close(): Promise<void> { return this.file.close(); }
@@ -298,7 +384,7 @@ export class JsonlFileSink implements LogSink {
   readonly target = "jsonl" as const;
   readonly file: ManagedFile;
   private outputDisabled = false;
-  constructor(private readonly config: Config, private readonly toolkit: Toolkit, private readonly report: ErrorReporter) { this.file = new ManagedFile("jsonl", report, () => config.jsonlRotation); }
+  constructor(private readonly config: Config, private readonly toolkit: Toolkit, private readonly report: ErrorReporter) { this.file = new ManagedFile("jsonl", report, () => config.jsonlRotation, () => config.autoRecoverFiles); }
   async write(record: LogRecord): Promise<void> {
     if ((!this.config.jsonlFilePath && !this.resolveOutput()) || !targetsRecord(record, this.target) || !shouldLog(record.level, this.config.effectiveLevel("jsonl"))) return;
     const value = {
@@ -316,7 +402,7 @@ export class JsonlFileSink implements LogSink {
     };
     const line = `${JSON.stringify(value)}\n`;
     const output = this.resolveOutput();
-    const fileWrite = this.config.jsonlFilePath ? this.file.write(this.config.jsonlFilePath, line) : Promise.resolve();
+    const fileWrite = this.config.jsonlFilePath ? this.file.write(this.config.resolveFilePath("jsonl")!, line) : Promise.resolve();
     const outputWrite = output
       ? writeToExternal(output, line).catch((reason: unknown) => {
         const error = toError(reason);
