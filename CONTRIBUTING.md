@@ -78,4 +78,4 @@ npm run test:coverage
 npm pack --dry-run
 ```
 
-GitHub Actions 会在 Ubuntu、Windows、macOS 的 Node.js 20 与 22 上运行构建、测试和打包核验；Ubuntu Node.js 24 为实验矩阵。npm 发布和 GitHub Release 创建是独立操作，必须获得明确授权后再执行。
+GitHub Actions 会在 Ubuntu、Windows、macOS 的 Node.js 20、22 与 24 上运行构建、测试和打包核验。npm 发布和 GitHub Release 创建是独立操作，必须获得明确授权后再执行。

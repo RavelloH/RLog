@@ -548,12 +548,10 @@ npm pack --dry-run
 
 详细文档：
 
-- [变更日志](CHANGELOG.md)
 - [从 v2 迁移到 v3](docs/migration-v3.md)
 - [Capture 指南](docs/capture.md)
 - [文件轮转](docs/rotation.md)
-- [3.1 可靠性与诊断详细指南](docs/reliability-v31.md)
-- [3.1 发布验证记录](docs/release-validation-v31.md)
+- [可靠性、资源预算与诊断](docs/reliability.md)
 
 
 
@@ -702,7 +700,7 @@ Processor 在内置输出之前按顺序执行，支持异步修改与过滤；T
 
 **安全边界：** 插件属于受信任应用代码；`redactKeys` 能保护结构化键值，但不可能自动识别自由字符串里的所有密钥。`capture.stream()` / `capture.binary()` 保存的原始内容也不会自动应用普通日志脱敏规则。
 
-### 诊断 API 与发布验证
+### 诊断 API
 
 ```js
 const state = rlog.diagnostics();
@@ -712,6 +710,6 @@ console.log(state.recovery.jsonl); // attempts, successes, failures, nextAttempt
 console.log(state.processorErrors, state.transportErrors);
 ```
 
-详细说明与限制见 [3.1 可靠性指南](docs/reliability-v31.md)，跨平台故障注入及性能基准见 [3.1 发布验证记录](docs/release-validation-v31.md)。
+更多边界条件与故障处理语义见[可靠性、资源预算与诊断指南](docs/reliability.md)。
 
 **3.1 不包含：** 跨进程共享同一轮转文件的互斥锁、全局时间排序、日志自动压缩/按天过期、默认自动崩溃转储，以及 exactly-once 日志交付协议。
